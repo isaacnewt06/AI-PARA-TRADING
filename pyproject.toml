@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-trading-brain"
+version = "0.1.0"
+description = "Professional Telegram knowledge ingestion and trading intelligence platform."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "OpenAI Codex" }
+]
+dependencies = [
+  "typer>=0.12.3",
+  "SQLAlchemy>=2.0.30",
+  "pydantic>=2.7.4",
+  "pydantic-settings>=2.2.1",
+  "python-dotenv>=1.0.1",
+  "PyYAML>=6.0.1",
+  "telethon>=1.36.0",
+  "langdetect>=1.0.9",
+  "python-docx>=1.1.2",
+  "openpyxl>=3.1.5",
+  "Pillow>=10.3.0",
+  "PyMuPDF>=1.24.7",
+  "rarfile>=4.2",
+  "py7zr>=0.21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0"
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

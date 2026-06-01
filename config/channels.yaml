@@ -1,0 +1,6 @@
+channels:
+  - input_reference: "https://t.me/tradingcursosgratiss"
+    title: "Cursos de Trading GRATIS"
+    normalized_name: "cursos_de_trading_gratis"
+    telegram_channel_id: -1002397614732
+    is_active: true

@@ -1,0 +1,15 @@
+app:
+  chunk_size: 1200
+  chunk_overlap: 150
+  max_sync_retries: 3
+  retry_backoff_seconds: 2
+  rate_limit_sleep_seconds: 1.0
+  sync_checkpoint_interval: 10
+  sqlite_busy_timeout_seconds: 30
+  embedding_dimension: 256
+  semantic_candidate_limit: 300
+  archive_inspection_enabled: true
+  default_language: "unknown"
+  transcript_provider: "mock"
+  summary_provider: "local-placeholder"
+  ocr_enabled: false

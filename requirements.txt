@@ -1,0 +1,16 @@
+typer>=0.12.3
+SQLAlchemy>=2.0.30
+pydantic>=2.7.4
+pydantic-settings>=2.2.1
+python-dotenv>=1.0.1
+PyYAML>=6.0.1
+telethon>=1.36.0
+langdetect>=1.0.9
+python-docx>=1.1.2
+openpyxl>=3.1.5
+Pillow>=10.3.0
+PyMuPDF>=1.24.7
+MetaTrader5>=5.0.45
+pytest>=8.2.0
+rarfile>=4.2
+py7zr>=0.21.0
