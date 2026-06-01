@@ -1069,6 +1069,67 @@ class TradingServicePlatformApplicationService:
             "deployment_report_ids": deployment_report_ids,
         }
 
+    def copy_trading_master_signal(
+        self,
+        *,
+        account_id: int,
+        agent_key: str,
+        canonical_symbol: str = "XAUUSD",
+        max_age_minutes: int = 10,
+    ) -> dict:
+        agent = self.repository.get_agent_by_key(account_id=account_id, agent_key=agent_key)
+        if agent is None:
+            raise ValueError("Execution agent credentials are invalid.")
+
+        symbol_upper = str(canonical_symbol or "").upper()
+        now = datetime.now(timezone.utc)
+        max_age = max(1, int(max_age_minutes or 10))
+        for report in self.repository.list_recent_deployment_execution_reports(limit=100):
+            if report.account_id == account_id:
+                continue
+            if report.created_at is None:
+                continue
+            created_at = report.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            age_minutes = (now - created_at).total_seconds() / 60.0
+            if age_minutes > max_age:
+                continue
+            source_account = self.repository.get_account(report.account_id)
+            source_owner = self.repository.get_user_by_id(source_account.owner_user_id) if source_account else None
+            if source_owner is None or source_owner.role != "owner":
+                continue
+            payload = self._parse_json_dict(report.payload_json)
+            master_signal = payload.get("master_signal") if isinstance(payload.get("master_signal"), dict) else {}
+            if not master_signal:
+                continue
+            signal_symbol = str(master_signal.get("canonical_symbol") or report.canonical_symbol or "").upper()
+            if symbol_upper and signal_symbol and signal_symbol != symbol_upper:
+                continue
+            if str(master_signal.get("status") or "") != "copyable":
+                continue
+            return {
+                "available": True,
+                "source_report_id": report.id,
+                "source_account_id": report.account_id,
+                "source_owner_email": source_owner.email,
+                "age_minutes": round(age_minutes, 3),
+                "max_age_minutes": max_age,
+                "master_signal": master_signal
+                | {
+                    "source_report_id": report.id,
+                    "source_account_id": report.account_id,
+                    "source_created_at": created_at.isoformat(),
+                },
+            }
+
+        return {
+            "available": False,
+            "reason": "no_recent_copyable_owner_signal",
+            "canonical_symbol": canonical_symbol,
+            "max_age_minutes": max_age,
+        }
+
     def platform_status(self) -> dict:
         summary = self.repository.summarize()
         summary["service_objective"] = (

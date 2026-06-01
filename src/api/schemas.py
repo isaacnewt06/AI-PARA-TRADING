@@ -151,6 +151,12 @@ class ExecutionAgentRuntimeReportRequest(BaseModel):
     notes: str | None = None
 
 
+class CopyTradingMasterSignalRequest(BaseModel):
+    agent_key: str
+    canonical_symbol: str = "XAUUSD"
+    max_age_minutes: int = 10
+
+
 class StrategyDeploymentRequest(BaseModel):
     strategy_key: str
     strategy_variant: str

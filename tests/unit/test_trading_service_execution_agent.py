@@ -12,11 +12,13 @@ from src.trading.trading_service_execution_agent import TradingServiceExecutionA
 class _FakeBridge:
     def __init__(self) -> None:
         self.execution_symbol = None
+        self.risk_calls: list[dict] = []
+        self.order_calls: list[dict] = []
 
     def account_status(self) -> dict:
         return {
             "is_demo": True,
-            "account_info": {"login": 197452102, "server": "Demo-Server"},
+            "account_info": {"login": 197452102, "server": "Demo-Server", "balance": 1000.0, "equity": 1000.0},
             "terminal_path": r"C:\Program Files\Exness MetaTrader 5\terminal64.exe",
         }
 
@@ -35,6 +37,28 @@ class _FakeBridge:
 
     def resolve_symbol_name(self, symbol: str) -> str:
         return f"{symbol}m"
+
+    def calculate_risk_volume_lots(self, **kwargs) -> dict:
+        self.risk_calls.append(kwargs)
+        risk_amount = float(kwargs["risk_amount"])
+        return {
+            "symbol_requested": kwargs["symbol"],
+            "symbol_resolved": kwargs["symbol"],
+            "entry_price": kwargs["entry_price"],
+            "stop_loss": kwargs["stop_loss"],
+            "risk_amount": risk_amount,
+            "risk_per_lot": 100.0,
+            "requested_volume_lots": risk_amount / 100.0,
+            "volume_lots": round(risk_amount / 100.0, 2),
+            "estimated_risk_amount": risk_amount,
+            "estimated_risk_percent_of_target": 1.0,
+            "sizing_method": "test",
+            "symbol_info": {"volume_min": 0.01},
+        }
+
+    def place_demo_market_order(self, **kwargs) -> dict:
+        self.order_calls.append(kwargs)
+        return {"request": kwargs, "result": {"retcode": 10009}}
 
 
 class _FakeDemoExecutor:
@@ -298,7 +322,7 @@ def test_execution_agent_blocks_when_terminal_login_does_not_match_account(tmp_p
     assert demo_executor.calls == []
 
 
-def test_execution_agent_runtime_skips_unsupported_deployments(tmp_path: Path) -> None:
+def test_execution_agent_signal_mirror_waits_without_master_signal(tmp_path: Path) -> None:
     settings = _configure(tmp_path)
     bridge = _FakeBridge()
 
@@ -339,9 +363,19 @@ def test_execution_agent_runtime_skips_unsupported_deployments(tmp_path: Path) -
                     "last_heartbeat_at": "2026-05-27T12:00:00+00:00",
                 },
             )
+        if request.method == "POST" and request.url.path.endswith("/copy-trading/master-signal"):
+            return httpx.Response(
+                200,
+                json={
+                    "available": False,
+                    "reason": "no_recent_copyable_owner_signal",
+                    "canonical_symbol": "BTCUSD",
+                    "max_age_minutes": 10,
+                },
+            )
         if request.method == "POST" and request.url.path.endswith("/report"):
             payload = json.loads(request.content.decode("utf-8"))
-            assert payload["deployment_runs"][0]["status"] == "skipped_unsupported"
+            assert payload["deployment_runs"][0]["status"] == "no_master_signal"
             return httpx.Response(
                 200,
                 json={
@@ -367,5 +401,97 @@ def test_execution_agent_runtime_skips_unsupported_deployments(tmp_path: Path) -
 
     result = runtime.run_cycle(canonical_symbol="BTCUSD")
 
-    assert result["deployment_runs"][0]["status"] == "skipped_unsupported"
+    assert result["deployment_runs"][0]["status"] == "no_master_signal"
     assert result["central_report"]["deployment_reports_created"] == 1
+
+
+def test_execution_agent_signal_mirror_copies_master_signal_with_account_risk(tmp_path: Path) -> None:
+    settings = _configure(tmp_path)
+    bridge = _FakeBridge()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/":
+            return httpx.Response(200, json={"service": "BOTEXTRATOR Trading Service API"})
+        if request.method == "POST" and request.url.path.endswith("/authenticate"):
+            return httpx.Response(
+                200,
+                json={
+                    "agent_id": 15,
+                    "account_id": 19,
+                    "agent_name": "client-copy-agent",
+                    "status": "provisioned",
+                    "broker_name": "Exness",
+                    "platform_type": "MT5",
+                    "is_demo": True,
+                    "broker_server": "Demo-Server",
+                    "login_reference": "197452102",
+                    "strategy_deployments": [
+                        {
+                            "strategy_key": "OWNER_MASTER_COPY",
+                            "strategy_variant": "owner_signal_v1",
+                            "operation_mode": "signal_mirror",
+                            "risk_mode": "reduced",
+                            "deployment_status": "active",
+                            "symbol_allowlist": ["XAUUSD"],
+                        }
+                    ],
+                    "symbol_aliases": [{"canonical_symbol": "XAUUSD", "broker_symbol": "XAUUSDm"}],
+                },
+            )
+        if request.method == "POST" and request.url.path.endswith("/heartbeat"):
+            return httpx.Response(200, json={"agent_id": 15, "account_id": 19, "status": "online"})
+        if request.method == "POST" and request.url.path.endswith("/copy-trading/master-signal"):
+            return httpx.Response(
+                200,
+                json={
+                    "available": True,
+                    "source_report_id": 501,
+                    "source_account_id": 1,
+                    "age_minutes": 0.5,
+                    "master_signal": {
+                        "status": "copyable",
+                        "canonical_symbol": "XAUUSD",
+                        "broker_symbol": "XAUUSDm",
+                        "side": "sell",
+                        "entry_price": 4500.0,
+                        "stop_loss": 4505.0,
+                        "take_profit": 4485.0,
+                        "source_report_id": 501,
+                    },
+                },
+            )
+        if request.method == "POST" and request.url.path.endswith("/report"):
+            payload = json.loads(request.content.decode("utf-8"))
+            run = payload["deployment_runs"][0]
+            assert run["status"] == "copy_dry_run_signal_detected"
+            assert run["source_master_report_id"] == 501
+            assert run["copy_risk_plan"]["risk_amount"] == 25.0
+            assert run["copy_risk_plan"]["volume_lots"] == 0.25
+            return httpx.Response(
+                200,
+                json={
+                    "runtime_report_id": 88,
+                    "agent_id": 15,
+                    "account_id": 19,
+                    "cycle_status": "completed",
+                    "deployment_reports_created": 1,
+                    "deployment_report_ids": [89],
+                },
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = httpx.Client(base_url="http://testserver", transport=httpx.MockTransport(handler))
+    runtime = TradingServiceExecutionAgentRuntime(
+        settings,
+        api_base_url="http://testserver",
+        account_id=19,
+        agent_key="copy-secret",
+        bridge=bridge,
+        http_client=client,
+    )
+
+    result = runtime.run_cycle(canonical_symbol="XAUUSD", dry_run=True)
+
+    assert result["deployment_runs"][0]["execution_status"] == "copy_dry_run_signal_detected"
+    assert bridge.risk_calls[0]["risk_amount"] == 25.0
+    assert bridge.order_calls == []

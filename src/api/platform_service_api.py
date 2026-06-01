@@ -16,6 +16,7 @@ from src.api.schemas import (
     BrokerAccountConnectRequest,
     ClientRegistrationRequest,
     ClientExnessAccountConnectRequest,
+    CopyTradingMasterSignalRequest,
     ExecutionAgentAuthRequest,
     ExecutionAgentHeartbeatRequest,
     ExecutionAgentRuntimeReportRequest,
@@ -440,6 +441,18 @@ def create_platform_api_app(settings: Settings | None = None) -> FastAPI:
                 open_positions=request.open_positions,
                 deployment_runs=request.deployment_runs,
                 notes=request.notes,
+            ),
+        )
+
+    @app.post("/api/platform/accounts/{account_id}/copy-trading/master-signal")
+    def copy_trading_master_signal(account_id: int, request: CopyTradingMasterSignalRequest) -> dict:
+        return _run_service(
+            resolved_settings,
+            lambda service: service.copy_trading_master_signal(
+                account_id=account_id,
+                agent_key=request.agent_key,
+                canonical_symbol=request.canonical_symbol,
+                max_age_minutes=request.max_age_minutes,
             ),
         )
 

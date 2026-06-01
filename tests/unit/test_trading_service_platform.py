@@ -643,6 +643,79 @@ def test_account_detail_exposes_mt5_connection_mismatch_and_agent_commands(tmp_p
         assert status["accounts"][0]["financial_metrics"]["source"] == "terminal_account_mismatch"
 
 
+def test_copy_trading_master_signal_returns_recent_owner_copyable_signal(tmp_path: Path) -> None:
+    settings = _configure(tmp_path)
+    init_db()
+
+    with session_scope() as session:
+        service = TradingServicePlatformApplicationService(session, settings)
+        service.create_user(email="owner@example.com", display_name="Owner", role="owner")
+        client = service.create_user(email="client@example.com", display_name="Client", role="client")
+        owner_account = service.connect_broker_account(
+            owner_email="owner@example.com",
+            account_label="Owner Master",
+            broker_name="Exness",
+            broker_server="Exness-MT5Trial11",
+            login_reference="197452102",
+            symbol_suffix="m",
+        )
+        owner_agent = service.register_execution_agent(
+            account_id=owner_account["account_id"],
+            agent_name="owner-agent",
+            host_name="OWNER-PC",
+        )
+        client_account = service.connect_own_exness_account(
+            user_id=client["user_id"],
+            account_label="Client Copy",
+            broker_server="Exness-MT5Trial11",
+            login_reference="198427256",
+            symbol_suffix="m",
+            referral_confirmed=True,
+        )
+        service.record_execution_agent_runtime(
+            account_id=owner_account["account_id"],
+            agent_key=owner_agent["agent_key"],
+            cycle_status="completed",
+            canonical_symbol="XAUUSD",
+            broker_symbol="XAUUSDm",
+            local_terminal_ready=True,
+            deployment_runs=[
+                {
+                    "strategy_key": "MAXIMO_MTF_QUANT_INSTITUTIONAL_V4",
+                    "strategy_variant": "v56_aggressive_filtered_b",
+                    "operation_mode": "ai_managed",
+                    "canonical_symbol": "XAUUSD",
+                    "broker_symbol": "XAUUSDm",
+                    "status": "executed",
+                    "execution_status": "demo_order_sent",
+                    "intelligence_action": "EXECUTE",
+                    "signal_detected": True,
+                    "dry_run": False,
+                    "master_signal": {
+                        "status": "copyable",
+                        "canonical_symbol": "XAUUSD",
+                        "broker_symbol": "XAUUSDm",
+                        "side": "sell",
+                        "entry_price": 4500.0,
+                        "stop_loss": 4505.0,
+                        "take_profit": 4485.0,
+                    },
+                }
+            ],
+        )
+
+        signal = service.copy_trading_master_signal(
+            account_id=client_account["account_id"],
+            agent_key=client_account["agent_key"],
+            canonical_symbol="XAUUSD",
+        )
+
+        assert signal["available"] is True
+        assert signal["source_account_id"] == owner_account["account_id"]
+        assert signal["master_signal"]["side"] == "sell"
+        assert signal["master_signal"]["source_report_id"]
+
+
 def test_account_detail_and_deployment_state_update(tmp_path: Path) -> None:
     settings = _configure(tmp_path)
     init_db()

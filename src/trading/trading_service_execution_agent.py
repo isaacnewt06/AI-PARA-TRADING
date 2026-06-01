@@ -20,6 +20,9 @@ logger = get_logger(__name__)
 class TradingServiceExecutionAgentRuntime:
     """Run a local broker-side agent that connects to the platform API."""
 
+    COPY_MAGIC_NUMBER = 560104
+    COPY_BASE_RISK_PERCENT = 5.0
+    COPY_MAX_RISK_PERCENT = 10.0
     SUPPORTED_MAXIMO_KEYS = {
         "MAXIMO_MTF_QUANT_INSTITUTIONAL_V4",
         "MAXIMO MTF Quant Institutional v4",
@@ -83,6 +86,7 @@ class TradingServiceExecutionAgentRuntime:
             remote_agent=remote_agent,
             terminal_validation=terminal_validation,
             fallback_canonical_symbol=canonical_symbol,
+            account_status=account_status,
             dry_run=dry_run,
             confirm_demo=confirm_demo,
             volume_lots=volume_lots,
@@ -135,6 +139,7 @@ class TradingServiceExecutionAgentRuntime:
         remote_agent: dict[str, Any],
         terminal_validation: dict[str, Any],
         fallback_canonical_symbol: str,
+        account_status: dict[str, Any],
         dry_run: bool,
         confirm_demo: bool,
         volume_lots: float,
@@ -185,6 +190,22 @@ class TradingServiceExecutionAgentRuntime:
                 )
                 continue
 
+            if operation_mode == "signal_mirror":
+                runs.append(
+                    self._run_signal_mirror_deployment(
+                        deployment=deployment,
+                        strategy_key=strategy_key,
+                        strategy_key_canonical=strategy_key_canonical,
+                        canonical_symbol=canonical_symbol,
+                        broker_symbol=broker_symbol,
+                        account_status=account_status,
+                        dry_run=dry_run,
+                        confirm_demo=confirm_demo,
+                        deviation_points=deviation_points,
+                    )
+                )
+                continue
+
             if strategy_key_canonical in self.SUPPORTED_MAXIMO_KEYS and operation_mode in {"ai_managed", "hybrid_guarded"}:
                 executor = self._demo_executor or MaximoQuantV4DemoApplicationService(self.settings)
                 result = executor.run(
@@ -207,6 +228,11 @@ class TradingServiceExecutionAgentRuntime:
                         "intelligence_action": result.get("intelligence_action"),
                         "signal_detected": result.get("signal_detected"),
                         "dry_run": result.get("dry_run"),
+                        "master_signal": self._build_master_signal(
+                            result=result,
+                            canonical_symbol=canonical_symbol,
+                            broker_symbol=broker_symbol,
+                        ),
                     }
                 )
                 continue
@@ -223,6 +249,212 @@ class TradingServiceExecutionAgentRuntime:
                 }
             )
         return runs
+
+    def _run_signal_mirror_deployment(
+        self,
+        *,
+        deployment: dict[str, Any],
+        strategy_key: str,
+        strategy_key_canonical: str,
+        canonical_symbol: str,
+        broker_symbol: str,
+        account_status: dict[str, Any],
+        dry_run: bool,
+        confirm_demo: bool,
+        deviation_points: int,
+    ) -> dict[str, Any]:
+        base_run = {
+            "strategy_key": strategy_key,
+            "strategy_key_canonical": strategy_key_canonical,
+            "strategy_variant": deployment.get("strategy_variant"),
+            "operation_mode": "signal_mirror",
+            "canonical_symbol": canonical_symbol,
+            "broker_symbol": broker_symbol,
+            "dry_run": dry_run,
+        }
+        mirror_signal = self._fetch_copy_master_signal(canonical_symbol=canonical_symbol)
+        if not mirror_signal.get("available"):
+            return base_run | {
+                "status": "no_master_signal",
+                "execution_status": "no_master_signal",
+                "intelligence_action": "WAIT",
+                "signal_detected": False,
+                "copy_signal_lookup": mirror_signal,
+            }
+
+        master_signal = mirror_signal.get("master_signal") or {}
+        side = str(master_signal.get("side") or master_signal.get("direction") or "").lower()
+        entry_price = self._optional_float(master_signal.get("entry_price"))
+        stop_loss = self._optional_float(master_signal.get("stop_loss") or master_signal.get("stop_price"))
+        take_profit = self._optional_float(master_signal.get("take_profit") or master_signal.get("target_price"))
+        if side not in {"buy", "sell"} or entry_price is None or stop_loss is None or take_profit is None:
+            return base_run | {
+                "status": "blocked_invalid_master_signal",
+                "execution_status": "blocked_invalid_master_signal",
+                "intelligence_action": "BLOCKED",
+                "signal_detected": False,
+                "copy_signal_lookup": mirror_signal,
+            }
+
+        existing_positions = self.bridge.list_positions(symbol=broker_symbol, magic=self.COPY_MAGIC_NUMBER)
+        if existing_positions:
+            return base_run | {
+                "status": "copy_position_already_open",
+                "execution_status": "copy_position_already_open",
+                "intelligence_action": "EXECUTE",
+                "signal_detected": True,
+                "source_master_report_id": mirror_signal.get("source_report_id"),
+                "master_signal": master_signal,
+            }
+
+        risk_mode = str(deployment.get("risk_mode") or "reduced")
+        equity = self._account_equity(account_status)
+        if equity <= 0:
+            return base_run | {
+                "status": "blocked_missing_account_equity",
+                "execution_status": "blocked_missing_account_equity",
+                "intelligence_action": "BLOCKED",
+                "signal_detected": True,
+                "source_master_report_id": mirror_signal.get("source_report_id"),
+                "master_signal": master_signal,
+            }
+        risk_multiplier = 1.0 if risk_mode == "normal" else (0.0 if risk_mode == "blocked" else 0.5)
+        risk_amount = equity * (self.COPY_BASE_RISK_PERCENT / 100.0) * risk_multiplier
+        if risk_amount <= 0:
+            return base_run | {
+                "status": "blocked_by_copy_risk_mode",
+                "execution_status": "blocked_by_copy_risk_mode",
+                "intelligence_action": "BLOCKED",
+                "signal_detected": True,
+                "source_master_report_id": mirror_signal.get("source_report_id"),
+                "master_signal": master_signal,
+            }
+
+        volume_plan = self.bridge.calculate_risk_volume_lots(
+            symbol=broker_symbol,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            risk_amount=risk_amount,
+        )
+        estimated_risk_percent = (float(volume_plan["estimated_risk_amount"]) / equity) * 100.0
+        if estimated_risk_percent > self.COPY_MAX_RISK_PERCENT:
+            return base_run | {
+                "status": "blocked_by_copy_min_lot_exceeds_10_percent_account_risk",
+                "execution_status": "blocked_by_copy_min_lot_exceeds_10_percent_account_risk",
+                "intelligence_action": "BLOCKED",
+                "signal_detected": True,
+                "source_master_report_id": mirror_signal.get("source_report_id"),
+                "master_signal": master_signal,
+                "copy_risk_plan": volume_plan | {
+                    "account_equity": equity,
+                    "estimated_risk_percent": round(estimated_risk_percent, 4),
+                    "risk_mode": risk_mode,
+                },
+            }
+
+        if dry_run:
+            return base_run | {
+                "status": "copy_dry_run_signal_detected",
+                "execution_status": "copy_dry_run_signal_detected",
+                "intelligence_action": "EXECUTE",
+                "signal_detected": True,
+                "source_master_report_id": mirror_signal.get("source_report_id"),
+                "master_signal": master_signal,
+                "copy_risk_plan": volume_plan | {
+                    "account_equity": equity,
+                    "estimated_risk_percent": round(estimated_risk_percent, 4),
+                    "risk_mode": risk_mode,
+                },
+            }
+        if not confirm_demo:
+            return base_run | {
+                "status": "blocked_confirm_demo_required",
+                "execution_status": "blocked_confirm_demo_required",
+                "intelligence_action": "BLOCKED",
+                "signal_detected": True,
+                "source_master_report_id": mirror_signal.get("source_report_id"),
+                "master_signal": master_signal,
+            }
+        execution = self.bridge.place_demo_market_order(
+            symbol=broker_symbol,
+            side=side,
+            volume_lots=float(volume_plan["volume_lots"]),
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            deviation_points=deviation_points,
+            magic_number=self.COPY_MAGIC_NUMBER,
+            comment=f"COPY{mirror_signal.get('source_report_id') or 0}",
+        )
+        return base_run | {
+            "status": "copy_demo_order_sent",
+            "execution_status": "copy_demo_order_sent",
+            "intelligence_action": "EXECUTE",
+            "signal_detected": True,
+            "source_master_report_id": mirror_signal.get("source_report_id"),
+            "master_signal": master_signal,
+            "copy_risk_plan": volume_plan | {
+                "account_equity": equity,
+                "estimated_risk_percent": round(estimated_risk_percent, 4),
+                "risk_mode": risk_mode,
+            },
+            "execution": execution,
+        }
+
+    def _fetch_copy_master_signal(self, *, canonical_symbol: str) -> dict[str, Any]:
+        with self._client() as client:
+            return client.post(
+                f"/api/platform/accounts/{self.account_id}/copy-trading/master-signal",
+                json={
+                    "agent_key": self.agent_key,
+                    "canonical_symbol": canonical_symbol,
+                    "max_age_minutes": 10,
+                },
+            ).json()
+
+    @staticmethod
+    def _build_master_signal(*, result: dict[str, Any], canonical_symbol: str, broker_symbol: str) -> dict[str, Any] | None:
+        signal = result.get("signal") if isinstance(result.get("signal"), dict) else None
+        if not signal:
+            return None
+        execution_status = str(result.get("execution_status") or "")
+        if execution_status not in {"demo_order_sent", "dry_run_signal_detected"}:
+            return None
+        side = str(signal.get("direction") or signal.get("side") or "").lower()
+        entry_price = signal.get("entry_price")
+        stop_loss = signal.get("stop_price") or signal.get("stop_loss")
+        take_profit = signal.get("target_price") or signal.get("take_profit")
+        if side not in {"buy", "sell"} or entry_price is None or stop_loss is None or take_profit is None:
+            return None
+        return {
+            "status": "copyable",
+            "canonical_symbol": canonical_symbol,
+            "broker_symbol": broker_symbol,
+            "side": side,
+            "entry_price": float(entry_price),
+            "stop_loss": float(stop_loss),
+            "take_profit": float(take_profit),
+            "strategy_variant": result.get("strategy_variant") or signal.get("strategy_variant"),
+            "source_execution_status": execution_status,
+            "source_dry_run": bool(result.get("dry_run")),
+            "quality": signal.get("quality"),
+            "risk_mode": (result.get("execution_risk_decision") or {}).get("allowed_risk_mode"),
+        }
+
+    @staticmethod
+    def _account_equity(account_status: dict[str, Any]) -> float:
+        account_info = account_status.get("account_info") if isinstance(account_status.get("account_info"), dict) else {}
+        for key in ("equity", "balance"):
+            value = TradingServiceExecutionAgentRuntime._optional_float(account_info.get(key))
+            if value is not None and value > 0:
+                return value
+        return 0.0
+
+    @staticmethod
+    def _optional_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def _resolve_broker_symbol(self, *, canonical_symbol: str, remote_agent: dict[str, Any]) -> str:
         aliases = remote_agent.get("symbol_aliases") or []

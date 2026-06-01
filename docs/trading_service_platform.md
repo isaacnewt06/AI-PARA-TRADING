@@ -39,6 +39,17 @@ The central AI should decide and learn, while broker-side execution happens thro
 6. The agent prepares the local execution environment for the account's active deployments.
 7. For supported deployments, the agent runs the assigned strategy cycle locally against MT5.
 
+## Owner master copy flow
+
+`signal_mirror` is the deployment mode for client copy-trading.
+
+1. The owner/master account runs `ai_managed` and is the only account that decides the market direction.
+2. When the owner produces a copyable `EXECUTE` signal, the agent report stores a `master_signal` with side, entry, SL, TP, source report and short expiry.
+3. Each client account runs its own MT5-local agent with `signal_mirror`.
+4. The client agent asks the API for the latest fresh owner signal.
+5. The client agent refuses to copy if MT5 is logged into the wrong account, the signal is stale, the client already has a copy position, or risk sizing exceeds the account-level cap.
+6. The client agent recalculates lot size from that client's own MT5 equity/balance, so a 200 USD account and a 500 USD account do not use the same volume.
+
 ## Suggested rollout
 
 1. Private owner account in demo
@@ -60,6 +71,7 @@ The central AI should decide and learn, while broker-side execution happens thro
 - `POST /api/platform/accounts/{account_id}/agents`
 - `POST /api/platform/accounts/{account_id}/agents/authenticate`
 - `POST /api/platform/accounts/{account_id}/agents/heartbeat`
+- `POST /api/platform/accounts/{account_id}/copy-trading/master-signal`
 - `POST /api/platform/accounts/{account_id}/deployments`
 - `POST /api/platform/accounts/{account_id}/symbols`
 
