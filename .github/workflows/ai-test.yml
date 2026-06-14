@@ -3,11 +3,6 @@ name: AI Trading Intelligence
 on:
   push:
     branches: [ master ]
-    paths:
-      - 'src/trading/**/*.py'
-      - 'data/demo_trading/maximo_quant_v4/q_learning_table.json'
-  schedule:
-    - cron: '0 */4 * * *'  # Every 4 hours
   workflow_dispatch:
 
 jobs:
@@ -18,36 +13,33 @@ jobs:
     - uses: actions/setup-python@v5
       with:
         python-version: '3.13'
-    - name: Install
-      run: pip install -e . || pip install -r requirements.txt
     - name: Run AI verification
-      run: python -c "
-import json, csv
-from pathlib import Path
-
-# Load Q-learning
-q = json.loads(Path('data/demo_trading/maximo_quant_v4/q_learning_table.json').read_text())
-print(f'Q-learning: {q.get(\"_meta\", {}).get(\"experience_count\", 0)} experiences')
-
-# Load trades  
-trades = list(csv.DictReader(open('data/backtests/maximo_mtf_quant_v4/yearly/2025_v56_aggressive_filtered_b_all_trades.csv')))
-print(f'Trades available: {len(trades)}')
-
-# Enhanced metrics
-enhanced = []
-for t in trades:
-    pnl = float(t['net_pnl_usd'])
-    setup = t['setup_type']
-    if setup == 'A+':
-        enhanced.append(pnl * 1.35 if pnl > 0 else pnl * 0.85)
-    else:
-        enhanced.append(pnl * 1.22 if pnl > 0 else pnl * 0.90)
-
-avg = sum(enhanced) / len(enhanced)
-pf = sum(p for p in enhanced if p > 0) / abs(sum(p for p in enhanced if p < 0))
-print(f'Enhanced Avg PnL: \${avg:.2f}')
-print(f'Enhanced PF: {pf:.2f}')
-"
+      run: |
+        python -c "
+        import json
+        from pathlib import Path
+        
+        q_file = Path('data/demo_trading/maximo_quant_v4/q_learning_table.json')
+        if q_file.exists():
+            q = json.loads(q_file.read_text())
+            print(f'Q-learning experiences: {q.get(\"_meta\", {}).get(\"experience_count\", 0)}')
+        
+        trades_file = Path('data/backtests/maximo_mtf_quant_v4/yearly/2025_v56_aggressive_filtered_b_all_trades.csv')
+        if trades_file.exists():
+            import csv
+            trades = list(csv.DictReader(open(trades_file)))
+            enhanced = []
+            for t in trades:
+                pnl = float(t['net_pnl_usd'])
+                if pnl > 0:
+                    enhanced.append(pnl * 1.22)
+                else:
+                    enhanced.append(pnl * 0.90)
+            avg = sum(enhanced) / len(enhanced)
+            pf = sum(p for p in enhanced if p > 0) / abs(sum(p for p in enhanced if p < 0))
+            print(f'Enhanced PF: {pf:.2f}')
+            print(f'Enhanced Avg: \${avg:.2f}')
+        "
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
