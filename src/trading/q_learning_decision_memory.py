@@ -140,6 +140,8 @@ class QLearningDecisionMemory:
         signal: dict[str, Any] | None,
         execution_status: str,
         controlled_demo_survival_protocol: dict[str, Any],
+        position_management: dict[str, Any] | None = None,
+        final_confirmation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         state_key = self._state_key(
             symbol=symbol,
@@ -163,7 +165,11 @@ class QLearningDecisionMemory:
             watch_execution_policy=watch_execution_policy,
             execution_risk_decision=execution_risk_decision,
             controlled_demo_survival_protocol=controlled_demo_survival_protocol,
+            position_management=position_management,
+            final_confirmation=final_confirmation,
         )
+        management_feedback = (position_management or {}).get("feedback") or {}
+        final_confirmation_payload = final_confirmation or {}
         experience = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "symbol": symbol,
@@ -179,6 +185,14 @@ class QLearningDecisionMemory:
             "watch_health": active_watch_metrics.get("watch_health"),
             "watch_probability_to_execute": active_watch_metrics.get("watch_probability_to_execute"),
             "allowed_risk_mode": execution_risk_decision.get("allowed_risk_mode"),
+            "position_management_feedback": management_feedback,
+            "position_management_actions": management_feedback.get("actions_taken", []),
+            "final_confirmation_score": final_confirmation_payload.get("final_confirmation_score"),
+            "final_confirmation_decision": final_confirmation_payload.get("decision"),
+            "entry_timing_quality": final_confirmation_payload.get("entry_timing_quality"),
+            "trap_risk_score": final_confirmation_payload.get("trap_risk_score"),
+            "late_entry_risk": final_confirmation_payload.get("late_entry_risk"),
+            "zone_validity": final_confirmation_payload.get("zone_validity"),
         }
         q_table = self._load_table()
         update = self._apply_q_update(q_table=q_table, experience=experience, replay=False)
@@ -234,6 +248,24 @@ class QLearningDecisionMemory:
                     + " Q-learning persistente favorece HOLD, pero la señal reducida de sesión/analogías se mantiene en modo demo con riesgo mínimo."
                 ).strip()
                 updated["execution_mode"] = "session_q_learning_reduced_execution"
+            elif self._supervised_v56_signal_can_reduce(signal=signal):
+                updated["can_execute"] = updated.get("can_execute", True)
+                updated["allowed_risk_mode"] = "reduced"
+                updated["max_risk_multiplier"] = min(self._safe_float(updated.get("max_risk_multiplier"), 0.5), 0.35)
+                updated["risk_application_reason"] = (
+                    str(updated.get("risk_application_reason") or "")
+                    + " Q-learning favorece HOLD, pero señal v56/AGG calibrada permite continuar solo en riesgo reducido."
+                ).strip()
+                updated["execution_mode"] = "v56_supervised_q_hold_reduced_execution"
+            elif self._armed_retest_signal_can_reduce(signal=signal):
+                updated["can_execute"] = updated.get("can_execute", True)
+                updated["allowed_risk_mode"] = "reduced"
+                updated["max_risk_multiplier"] = min(self._safe_float(updated.get("max_risk_multiplier"), 0.35), 0.25)
+                updated["risk_application_reason"] = (
+                    str(updated.get("risk_application_reason") or "")
+                    + " Q-learning favorece HOLD, pero ARMED_RETEST materializó gatillo limpio; continuar solo con riesgo reducido."
+                ).strip()
+                updated["execution_mode"] = "armed_retest_q_hold_reduced_execution"
             else:
                 updated["can_execute"] = False
                 updated["allowed_risk_mode"] = "blocked"
@@ -245,15 +277,30 @@ class QLearningDecisionMemory:
                 )
                 updated["max_risk_multiplier"] = 0.0
         elif signal is not None and strategy_harmony.get("status") == "conflicted":
-            updated["can_execute"] = False
-            updated["allowed_risk_mode"] = "blocked"
-            updated["execution_status"] = "blocked_by_q_learning_strategy_harmony"
-            updated["execution_mode"] = "blocked_by_q_learning_strategy_harmony"
-            updated["decision"] = "blocked"
-            updated["risk_application_reason"] = (
-                "Q-learning detecta conflicto entre estrategia, cursos, analogías y dirección; no se permite ejecutar."
-            )
-            updated["max_risk_multiplier"] = 0.0
+            if self._weak_q_learning_conflict_can_reduce(
+                signal_side=side,
+                q_policy_action=action,
+                strategy_harmony=strategy_harmony,
+                q_learning_decision=q_learning_decision,
+            ) or self._supervised_v56_signal_can_reduce(signal=signal) or self._armed_retest_signal_can_reduce(signal=signal):
+                updated["can_execute"] = updated.get("can_execute", True)
+                updated["allowed_risk_mode"] = "reduced"
+                updated["max_risk_multiplier"] = min(self._safe_float(updated.get("max_risk_multiplier"), 0.5), 0.25)
+                updated["execution_mode"] = "q_learning_weak_conflict_reduced_execution"
+                updated["risk_application_reason"] = (
+                    str(updated.get("risk_application_reason") or "")
+                    + " Q-learning persistente contradice con ventaja debil, pero cursos/mercado/watch estan alineados; solo riesgo reducido."
+                ).strip()
+            else:
+                updated["can_execute"] = False
+                updated["allowed_risk_mode"] = "blocked"
+                updated["execution_status"] = "blocked_by_q_learning_strategy_harmony"
+                updated["execution_mode"] = "blocked_by_q_learning_strategy_harmony"
+                updated["decision"] = "blocked"
+                updated["risk_application_reason"] = (
+                    "Q-learning detecta conflicto entre estrategia, cursos, analogías y dirección; no se permite ejecutar."
+                )
+                updated["max_risk_multiplier"] = 0.0
         elif signal is not None and strategy_harmony.get("status") == "mixed":
             updated["allowed_risk_mode"] = "reduced"
             updated["max_risk_multiplier"] = min(self._safe_float(updated.get("max_risk_multiplier"), 0.5), 0.35)
@@ -269,6 +316,83 @@ class QLearningDecisionMemory:
                 + " Q-learning persistente exige riesgo reducido por armonía parcial, deterioro o baja probabilidad."
             ).strip()
         return updated
+
+    @classmethod
+    def _supervised_v56_signal_can_reduce(cls, *, signal: dict[str, Any]) -> bool:
+        strategy_variant = str(signal.get("strategy_variant") or "").lower()
+        setup_type = str(signal.get("setup_type") or signal.get("signal_type") or "").upper()
+        market_regime = str(signal.get("market_regime") or "").upper()
+        v56_like = "v56" in strategy_variant or ("AGG" in setup_type and market_regime == "EXPANSION")
+        if not v56_like or "AGG" not in setup_type or market_regime != "EXPANSION":
+            return False
+        confidence = cls._safe_float(signal.get("confidence"))
+        quant_score = cls._safe_float(signal.get("quant_score"))
+        impulse_score = cls._safe_float(signal.get("impulse_score"))
+        if confidence > 1.0:
+            confidence /= 100.0
+        if quant_score > 1.0:
+            quant_score /= 100.0
+        if impulse_score > 1.0:
+            impulse_score /= 100.0
+        try:
+            selected_rr = float(signal.get("selected_rr") or 0.0)
+        except (TypeError, ValueError):
+            selected_rr = 0.0
+        return bool(confidence >= 0.78 and quant_score >= 0.70 and impulse_score >= 0.70 and selected_rr >= 1.2)
+
+    @classmethod
+    def _armed_retest_signal_can_reduce(cls, *, signal: dict[str, Any]) -> bool:
+        signal_type = str(signal.get("signal_type") or signal.get("setup_type") or "").upper()
+        if "ARMED_RETEST" not in signal_type:
+            return False
+        confidence = cls._safe_float(signal.get("confidence"))
+        continuation = cls._safe_float(signal.get("continuation_momentum"))
+        if confidence > 1.0:
+            confidence /= 100.0
+        if continuation > 1.0:
+            continuation /= 100.0
+        try:
+            selected_rr = float(signal.get("selected_rr") or 0.0)
+        except (TypeError, ValueError):
+            selected_rr = 0.0
+        has_structure = bool(signal.get("micro_bos") or signal.get("micro_choch") or signal.get("choch"))
+        has_bias = bool(signal.get("manual_bias_confirmation") or signal.get("course_bias_confirmation"))
+        has_prices = bool(signal.get("entry_price") and signal.get("stop_price") and signal.get("target_price"))
+        return bool(confidence >= 0.74 and selected_rr >= 1.0 and has_structure and has_bias and continuation >= 0.55 and has_prices)
+
+    def _weak_q_learning_conflict_can_reduce(
+        self,
+        *,
+        signal_side: str,
+        q_policy_action: str,
+        strategy_harmony: dict[str, Any],
+        q_learning_decision: dict[str, Any],
+    ) -> bool:
+        """Let live consensus override stale Q-memory only with reduced risk."""
+        selected_side = str(strategy_harmony.get("selected_side") or "").upper()
+        if signal_side not in {"BUY", "SELL"} or selected_side != signal_side:
+            return False
+        if q_policy_action not in {"BUY", "SELL"} or q_policy_action == signal_side:
+            return False
+        q_value_gap = abs(
+            self._safe_float(strategy_harmony.get("q_value_gap"), self._safe_float(q_learning_decision.get("value_gap")))
+        )
+        agreement_ratio = self._safe_float(strategy_harmony.get("agreement_ratio"))
+        layer_agreement_score = self._safe_float(strategy_harmony.get("layer_agreement_score"))
+        course_status = str(strategy_harmony.get("course_status") or "").lower()
+        course_score = self._safe_float(strategy_harmony.get("course_score"))
+        conflicts = [str(item) for item in (strategy_harmony.get("conflicts") or [])]
+        only_persistent_memory_conflict = conflicts and all(
+            "persistent_q_learning" in item or "historical_backtest_prior" in item for item in conflicts
+        )
+        return bool(
+            q_value_gap <= 0.12
+            and agreement_ratio >= 0.70
+            and layer_agreement_score >= 0.80
+            and course_status in {"aligned", "partial"}
+            and course_score >= 0.70
+            and only_persistent_memory_conflict
+        )
 
     def ensure_historical_seed(self, *, backtest_dir: Path, symbol: str = "XAUUSDm") -> dict[str, Any]:
         files = sorted(backtest_dir.glob("*trades.csv")) if backtest_dir.exists() else []
@@ -387,6 +511,8 @@ class QLearningDecisionMemory:
         watch_execution_policy: dict[str, Any],
         execution_risk_decision: dict[str, Any],
         controlled_demo_survival_protocol: dict[str, Any],
+        position_management: dict[str, Any] | None = None,
+        final_confirmation: dict[str, Any] | None = None,
     ) -> tuple[float, str]:
         reward = 0.0
         reasons: list[str] = []
@@ -403,7 +529,7 @@ class QLearningDecisionMemory:
         elif status in {"blocked_by_q_learning_memory", "blocked_by_controlled_demo_survival_protocol"}:
             reward += 0.08 if action == "HOLD" else -0.12
             reasons.append("proteccion de capital ante guardia activa")
-        elif status in {"blocked_by_market_intelligence", "no_signal"} and action == "HOLD":
+        elif (status == "no_signal" or status.startswith("blocked_") or status.startswith("waiting_")) and action == "HOLD":
             reward += 0.04
             reasons.append("espera disciplinada sin trigger final")
 
@@ -441,6 +567,52 @@ class QLearningDecisionMemory:
         if execution_risk_decision.get("allowed_risk_mode") == "blocked" and action in {"BUY", "SELL"}:
             reward -= 0.12
             reasons.append("riesgo bloqueado para accion direccional")
+
+        final_payload = final_confirmation or {}
+        final_score = self._safe_float(final_payload.get("final_confirmation_score"))
+        final_decision = str(final_payload.get("decision") or "")
+        trap_risk = self._safe_float(final_payload.get("trap_risk_score"))
+        late_risk = self._safe_float(final_payload.get("late_entry_risk"))
+        if final_decision == "EXECUTE" and final_score >= 72 and action in {"BUY", "SELL"}:
+            reward += 0.12
+            reasons.append("confirmacion final valida para ejecucion")
+        elif final_decision == "BLOCK" and action in {"BUY", "SELL"}:
+            reward -= 0.18
+            reasons.append("accion direccional contra bloqueo de confirmacion final")
+        if trap_risk >= 0.72 and action in {"BUY", "SELL"}:
+            reward -= 0.1
+            reasons.append("riesgo de trampa alto penaliza entrada")
+        if late_risk >= 0.72 and action in {"BUY", "SELL"}:
+            reward -= 0.1
+            reasons.append("entrada tarde penalizada por Q-learning")
+
+        management_feedback = (position_management or {}).get("feedback") or {}
+        if management_feedback:
+            if management_feedback.get("be_applied"):
+                reward += 0.12
+                reasons.append("gestion aplico break-even/proteccion")
+            if management_feedback.get("partial_taken"):
+                reward += 0.1
+                reasons.append("gestion tomo parcial valido")
+            if management_feedback.get("trailing_applied"):
+                reward += 0.08
+                reasons.append("gestion activo trailing/profit lock")
+            if management_feedback.get("fast_exit_taken"):
+                reward += 0.14
+                reasons.append("gestion salio rapido por momentum decay")
+            if management_feedback.get("invalid_partial_fallback"):
+                reward += 0.04
+                reasons.append("parcial invalido por lote minimo uso fallback defensivo")
+            if management_feedback.get("gave_back_profit"):
+                reward -= 0.32
+                reasons.append("penalizacion: trade devolvio ganancia despues de MFE positivo")
+            if (
+                management_feedback.get("momentum_decay_detected")
+                and not management_feedback.get("be_applied")
+                and not management_feedback.get("fast_exit_taken")
+            ):
+                reward -= 0.18
+                reasons.append("momentum decay detectado sin proteccion efectiva")
 
         reward = round(max(-1.0, min(1.0, reward)), 4)
         return reward, "; ".join(reasons) or "experiencia neutral de observacion"
