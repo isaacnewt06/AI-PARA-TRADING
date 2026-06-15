@@ -53,7 +53,7 @@ class MarketEventCalendar:
             self.path.write_text(json.dumps(self.DEFAULT_TEMPLATE, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def load(self, *, auto_sync: bool = False, remote_url: str | None = None, timeout_seconds: int = 20) -> list[MarketEvent]:
-        if auto_sync:
+        if auto_sync and not self._live_cache_is_fresh(max_age_minutes=30):
             self.sync_forex_factory_weekly(remote_url=remote_url, timeout_seconds=timeout_seconds)
         manual_events = self._load_file(self.path)
         cached_events = self._load_file(self.live_cache_path)
@@ -161,21 +161,33 @@ class MarketEventCalendar:
             "status": "disabled" if not auto_sync else "pending",
         }
         if auto_sync:
-            try:
+            if self._live_cache_is_fresh(max_age_minutes=30):
                 sync_status = {
                     "attempted": True,
-                    "status": "ok",
-                    **self.sync_forex_factory_weekly(
-                        remote_url=remote_url,
-                        timeout_seconds=timeout_seconds,
-                    ),
+                    "status": "cached",
+                    "reason": "Live economic calendar cache is fresh; remote sync skipped to avoid provider rate limits.",
+                    "cache_path": str(self.live_cache_path.resolve()),
+                    "cache_age_seconds": self._live_cache_age_seconds(),
                 }
-            except Exception as exc:
-                sync_status = {
-                    "attempted": True,
-                    "status": "error",
-                    "error": str(exc),
-                }
+            else:
+                try:
+                    sync_status = {
+                        "attempted": True,
+                        "status": "ok",
+                        **self.sync_forex_factory_weekly(
+                            remote_url=remote_url,
+                            timeout_seconds=timeout_seconds,
+                        ),
+                    }
+                except Exception as exc:
+                    sync_status = {
+                        "attempted": True,
+                        "status": "error",
+                        "error": str(exc),
+                        "fallback": "Using manual/local cached events when available.",
+                        "cache_path": str(self.live_cache_path.resolve()),
+                        "cache_age_seconds": self._live_cache_age_seconds(),
+                    }
         relevant = [
             event
             for event in self.load()
@@ -211,6 +223,18 @@ class MarketEventCalendar:
             "sync_status": sync_status,
             "local_timezone": local_timezone_name,
         }
+
+    def _live_cache_age_seconds(self) -> float | None:
+        if not self.live_cache_path.exists():
+            return None
+        modified = datetime.fromtimestamp(self.live_cache_path.stat().st_mtime, tz=timezone.utc)
+        return round((datetime.now(timezone.utc) - modified).total_seconds(), 1)
+
+    def _live_cache_is_fresh(self, *, max_age_minutes: int) -> bool:
+        age_seconds = self._live_cache_age_seconds()
+        if age_seconds is None:
+            return False
+        return age_seconds <= max_age_minutes * 60
 
     @staticmethod
     def _infer_tags(title: str) -> list[str]:

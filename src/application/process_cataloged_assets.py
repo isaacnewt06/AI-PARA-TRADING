@@ -55,25 +55,30 @@ class CatalogedAssetProcessingService:
 
     def process_documents(self, limit: int | None = None) -> dict[str, int]:
         processed = skipped = failed = 0
+        remaining = limit
+        candidate_limit = None if limit is None else max(limit * 5, limit + 20)
         files = self.file_repository.list_by_category_status(
             categories=["document", "generic"],
             statuses=["downloaded", "queued", "skipped"],
-            limit=limit,
+            limit=candidate_limit,
         )
         for file_asset in files:
+            if remaining is not None and remaining <= 0:
+                break
             path = self._ensure_local_asset_path(file_asset)
             if path is None or not path.exists():
                 file_asset.status = "queued"
                 file_asset.processing_status = "queued"
                 file_asset.notes = "Physical file is not downloaded yet."
                 self.session.add(file_asset)
-                skipped += 1
                 continue
             if not self.document_processor.is_supported(path, file_asset.file_name):
                 file_asset.processing_status = "skipped"
                 file_asset.notes = f"{file_asset.notes or ''}\nUnsupported document payload skipped.".strip()
                 self.session.add(file_asset)
                 skipped += 1
+                if remaining is not None:
+                    remaining -= 1
                 continue
             try:
                 self._process_document(file_asset)
@@ -85,6 +90,8 @@ class CatalogedAssetProcessingService:
                 self.session.add(file_asset)
                 failed += 1
                 logger.exception("Failed to process cataloged asset %s", file_asset.file_name)
+            if remaining is not None:
+                remaining -= 1
         self.session.flush()
         return {"processed": processed, "skipped": skipped, "failed": failed}
 

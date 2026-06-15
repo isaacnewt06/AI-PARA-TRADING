@@ -195,6 +195,47 @@ def test_cool_learning_auto_selects_sensei_protocol_from_market_state() -> None:
     assert any("activado automáticamente" in item for item in result["confirmations"])
 
 
+def test_cool_learning_does_not_let_q_policy_flip_course_bias_when_conflicting() -> None:
+    result = MarketCoolLearningMemory._course_alignment(
+        course_context={
+            "dominant_family": "OB Rejection",
+            "harmony_score": 0.7,
+            "support_score": 0.68,
+            "matched_context_count": 6,
+            "top_matching_contexts": [{"strategy_family": "OB Rejection", "score": 0.82}],
+        },
+        market_state={
+            "ob_rejection_families": {
+                "manual_bias": {
+                    "active": True,
+                    "side": "SELL",
+                    "checks": {
+                        "sell_liquidity": True,
+                        "sell_micro_bos": True,
+                        "sell_displacement": True,
+                    },
+                },
+                "aggressive": {
+                    "checks": {
+                        "strong_bearish_rejection": True,
+                        "partial_bear_displacement": True,
+                        "micro_bos_sell": True,
+                    }
+                },
+                "institutional": {"checks": {"liquidity_quality_sell": True}},
+            },
+        },
+        dominant_family="OB Rejection",
+        market_regime="NORMAL",
+        preferred_side="SELL",
+        policy_action="BUY",
+    )
+
+    assert result["status"] == "aligned"
+    assert result["course_recommended_action"] == "SELL"
+    assert any("Memoria historica favorece BUY" in item for item in result["warnings"])
+
+
 def test_cool_learning_sensei_protocol_lists_missing_steps_without_manual_prompt() -> None:
     result = MarketCoolLearningMemory._course_alignment(
         course_context={

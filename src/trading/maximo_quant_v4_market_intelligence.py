@@ -498,6 +498,16 @@ class MaximoQuantV4MarketIntelligenceEngine:
             )
         if historical_analogs.get("status") == "available":
             evidence.append(str(historical_analogs.get("summary")))
+            variation_memory = historical_analogs.get("pattern_variation_memory") or {}
+            if variation_memory.get("variant_matches_found"):
+                evidence.append(
+                    "Variaciones estructurales: familia={family}, matches={matches}, sesgo={bias}, win_rate={win_rate}.".format(
+                        family=variation_memory.get("current_variation_family"),
+                        matches=variation_memory.get("variant_matches_found"),
+                        bias=variation_memory.get("variant_bias"),
+                        win_rate=variation_memory.get("variant_win_rate"),
+                    )
+                )
             if historical_analogs.get("bias") == "favorable":
                 pattern_matches.append("Analogías M5 similares favorecieron este lado con frecuencia histórica suficiente.")
             elif historical_analogs.get("bias") == "unfavorable":
@@ -553,7 +563,27 @@ class MaximoQuantV4MarketIntelligenceEngine:
             missing_for_execute=missing_for_execute,
             session_tags=session_tags,
         )
+        extracted_brain = MaximoQuantV4MarketIntelligenceEngine._extracted_knowledge_operational_brain(
+            candidate_side=candidate_side,
+            selected_side=str(professional_matrix.get("selected_side") or candidate_side).upper(),
+            dominant_family=dominant_family,
+            operational_family=operational_family,
+            knowledge_alignment=knowledge_alignment,
+            course_alignment=(cool_learning_memory.get("course_alignment") or {}),
+            cool_learning_memory=cool_learning_memory,
+            professional_matrix=professional_matrix,
+            historical_analogs=historical_analogs,
+            side_probability_comparison=side_probability_comparison,
+            setup_maturity=setup_maturity,
+            confidence=confidence,
+            event_action=event_action,
+            signal_detected=signal_detected,
+            missing_for_execute=missing_for_execute,
+        )
+        professional_matrix["extracted_knowledge_operational_brain"] = extracted_brain
         evidence.append(str(professional_matrix.get("summary")))
+        if extracted_brain.get("status") in {"primary_operational_brain", "armed_course_protocol"}:
+            evidence.append(str(extracted_brain.get("summary")))
 
         maturity_gap = round(max(0.0, 75.0 - setup_maturity), 2)
         near_execute = bool(
@@ -613,6 +643,7 @@ class MaximoQuantV4MarketIntelligenceEngine:
             "side_probability_comparison": side_probability_comparison,
             "cool_learning_memory": cool_learning_memory,
             "q_learning_memory": cool_learning_memory,
+            "extracted_knowledge_operational_brain": extracted_brain,
             "professional_decision_matrix": professional_matrix,
             "session_opportunity": professional_matrix.get("session_opportunity"),
             "interpretation": (
@@ -621,6 +652,158 @@ class MaximoQuantV4MarketIntelligenceEngine:
                 if near_execute
                 else "El conocimiento aprendido aporta contexto, pero el patrón todavía no está suficientemente preparado."
             ),
+        }
+
+    @staticmethod
+    def _extracted_knowledge_operational_brain(
+        *,
+        candidate_side: str,
+        selected_side: str,
+        dominant_family: str,
+        operational_family: str,
+        knowledge_alignment: dict[str, Any],
+        course_alignment: dict[str, Any],
+        cool_learning_memory: dict[str, Any],
+        professional_matrix: dict[str, Any],
+        historical_analogs: dict[str, Any],
+        side_probability_comparison: dict[str, Any],
+        setup_maturity: float,
+        confidence: float,
+        event_action: str,
+        signal_detected: bool,
+        missing_for_execute: list[str],
+    ) -> dict[str, Any]:
+        """Expose how extracted material is being used as an operational trading brain."""
+        harmony = knowledge_alignment.get("harmony", {}) or {}
+        top_contexts = list(knowledge_alignment.get("top_matching_contexts", []) or [])
+        protocols = MaximoQuantV4MarketIntelligenceEngine._dedupe_items(
+            list(course_alignment.get("auto_selected_protocols") or [])
+        )
+        confirmations = MaximoQuantV4MarketIntelligenceEngine._dedupe_items(
+            list(course_alignment.get("confirmations") or [])
+        )
+        missing_course_steps = MaximoQuantV4MarketIntelligenceEngine._dedupe_items(
+            list(course_alignment.get("missing_steps") or [])
+        )
+        warnings = MaximoQuantV4MarketIntelligenceEngine._dedupe_items(list(course_alignment.get("warnings") or []))
+        course_score = float(course_alignment.get("course_score") or 0.0)
+        harmony_score = float(harmony.get("harmony_score") or 0.0)
+        support_score = float(knowledge_alignment.get("support_score") or 0.0)
+        side_data = (side_probability_comparison.get("sides") or {}).get(selected_side) or {}
+        side_probability = float(side_data.get("probability_to_confirm") or 0.0)
+        historical_bias = str(historical_analogs.get("bias") or "unknown")
+        learned_profile = course_alignment.get("learned_protocol_profile") or {}
+        source_summary = course_alignment.get("source_summary") or {}
+        matched_count = int(knowledge_alignment.get("matched_context_count") or source_summary.get("matched_context_count") or 0)
+        actionable_side = selected_side if selected_side in {"BUY", "SELL"} else candidate_side
+        knowledge_score = round(
+            max(
+                0.0,
+                min(
+                    1.0,
+                    (
+                        min(1.0, setup_maturity / 100.0)
+                        + confidence
+                        + harmony_score
+                        + support_score
+                        + course_score
+                        + side_probability
+                    )
+                    / 6.0,
+                ),
+            ),
+            4,
+        )
+
+        if event_action != "allow":
+            status = "armed_but_external_guard"
+            role = "motor_operativo_en_espera"
+        elif protocols and course_score >= 0.68 and actionable_side in {"BUY", "SELL"}:
+            status = "primary_operational_brain"
+            role = "motor_principal_de_decision"
+        elif protocols and course_score >= 0.50 and actionable_side in {"BUY", "SELL"}:
+            status = "armed_course_protocol"
+            role = "motor_de_confirmaciones"
+        elif harmony_score >= 0.45 or support_score >= 0.45 or matched_count > 0:
+            status = "supporting_operational_memory"
+            role = "filtro_y_contexto_operativo"
+        else:
+            status = "context_memory_only"
+            role = "memoria_contextual"
+
+        if not signal_detected and status in {"primary_operational_brain", "armed_course_protocol"}:
+            decision_impact = (
+                f"Preparar {actionable_side}: el conocimiento aprendido reconoce la idea, "
+                "pero falta trigger final/confirmacion de ejecucion."
+            )
+        elif signal_detected and status in {"primary_operational_brain", "armed_course_protocol"}:
+            decision_impact = (
+                f"Permitir que {actionable_side} pase a guardias de ejecucion si SL/RR, macro, broker y riesgo son validos."
+            )
+        elif event_action != "allow":
+            decision_impact = "Mantener la tesis aprendida, pero no ejecutar hasta que macro/eventos permitan operar."
+        else:
+            decision_impact = "Usar conocimiento extraido para contexto y no forzar entrada sin protocolo completo."
+
+        protocol_priority = "sensei_bias_high" if "SENSEI_MANUAL_BIAS_PROTOCOL" in protocols else "standard"
+        if "SENSEI_MANUAL_BIAS_PROTOCOL" in protocols and actionable_side in {"BUY", "SELL"}:
+            protocol_rules = [
+                f"{actionable_side}: definir bias mayor y barrida de liquidez.",
+                "Confirmar BMS/BOS en M5/M15 despues de la barrida.",
+                "Esperar desplazamiento claro y retest/reaccion de zona.",
+                "Usar SL logico sobre/bajo la liquidez barrida y RR evaluable.",
+            ]
+        else:
+            protocol_rules = [
+                "Detectar familia aprendida dominante.",
+                "Comparar contexto actual con mapa de situacion y patrones historicos.",
+                "Esperar confirmacion final antes de ejecutar.",
+            ]
+
+        summary = (
+            f"Cerebro de conocimiento: rol={role}, estado={status}, lado={actionable_side}, "
+            f"protocolos={protocols or ['contextual']}, score={knowledge_score}."
+        )
+        return {
+            "status": status,
+            "role": role,
+            "summary": summary,
+            "selected_side": actionable_side,
+            "dominant_family": dominant_family,
+            "operational_family": operational_family,
+            "knowledge_score": knowledge_score,
+            "course_score": course_score,
+            "harmony_score": harmony_score,
+            "support_score": support_score,
+            "side_probability": side_probability,
+            "historical_bias": historical_bias,
+            "matched_context_count": matched_count,
+            "protocol_priority": protocol_priority,
+            "auto_selected_protocols": protocols,
+            "protocol_rules_applied": protocol_rules,
+            "confirmations_from_extracted_knowledge": confirmations[:8],
+            "missing_knowledge_steps": MaximoQuantV4MarketIntelligenceEngine._dedupe_items(
+                missing_course_steps + list(missing_for_execute or [])
+            )[:8],
+            "warnings": warnings[:5],
+            "decision_impact": decision_impact,
+            "learned_protocol_profile": learned_profile,
+            "source_types": [
+                "manual_knowledge",
+                "telegram_courses",
+                "pdf_documents",
+                "videos_images_audio_transcripts",
+                "market_situation_map",
+                "q_learning_outcome_memory",
+            ],
+            "source_files": [
+                "data/knowledge/manual/sensei_manual_bias_protocol.md",
+                "data/knowledge/market_situation_map.json",
+                "data/knowledge/market_situation_map.md",
+                "data/demo_trading/maximo_quant_v4/q_learning_table.json",
+                "data/demo_trading/maximo_quant_v4/q_learning_experience_replay.jsonl",
+            ],
+            "top_matching_contexts": top_contexts[:3],
         }
 
     @staticmethod
@@ -657,6 +840,8 @@ class MaximoQuantV4MarketIntelligenceEngine:
             and cool_policy in {"BUY", "SELL"}
             and cool_policy != selected_side
             and float(cool_values.get(cool_policy, 0.0)) >= float(cool_values.get(selected_side, 0.0)) + 0.18
+            and str(course_alignment.get("course_recommended_action") or "").upper() == cool_policy
+            and not list(course_alignment.get("warnings") or [])
         ):
             selected_side = cool_policy
         probability_gap = round(abs(buy_probability - sell_probability), 4)
@@ -1086,6 +1271,18 @@ class MaximoQuantV4MarketIntelligenceEngine:
                 probability += 0.06
             elif analogs.get("bias") == "unfavorable":
                 probability -= 0.06
+            variation_memory = analogs.get("pattern_variation_memory") or {}
+            variant_bias = str(variation_memory.get("variant_bias") or analogs.get("variant_bias") or "")
+            variant_matches = int(variation_memory.get("variant_matches_found") or analogs.get("variant_matches_found") or 0)
+            if variant_matches:
+                variant_win_rate = float(variation_memory.get("variant_win_rate") or analogs.get("variant_win_rate") or 0.0)
+                variant_failure_rate = float(variation_memory.get("variant_failure_rate") or analogs.get("variant_failure_rate") or 0.0)
+                probability += (variant_win_rate - variant_failure_rate) * 0.12
+                probability += min(0.04, variant_matches * 0.003)
+                if variant_bias == "favorable":
+                    probability += 0.035
+                elif variant_bias == "unfavorable":
+                    probability -= 0.035
         elif analogs.get("status") in {"insufficient_data", "no_close_match"}:
             probability -= 0.03
 
@@ -1273,6 +1470,7 @@ class MaximoQuantV4MarketIntelligenceEngine:
 
         current_window = candles[-window:]
         current_signature = MaximoQuantV4MarketIntelligenceEngine._window_signature(current_window)
+        current_behavior = MaximoQuantV4MarketIntelligenceEngine._window_behavior_features(current_window)
         if not current_signature:
             return {
                 "status": "insufficient_shape",
@@ -1281,6 +1479,7 @@ class MaximoQuantV4MarketIntelligenceEngine:
             }
 
         candidates: list[dict[str, Any]] = []
+        variation_candidates: list[dict[str, Any]] = []
         last_start = len(candles) - window - horizon - window
         for start in range(0, max(0, last_start), 3):
             prior_window = candles[start : start + window]
@@ -1288,8 +1487,12 @@ class MaximoQuantV4MarketIntelligenceEngine:
             if not prior_signature:
                 continue
             similarity = MaximoQuantV4MarketIntelligenceEngine._signature_similarity(current_signature, prior_signature)
-            if similarity < 0.72:
-                continue
+            prior_behavior = MaximoQuantV4MarketIntelligenceEngine._window_behavior_features(prior_window)
+            variation_similarity = MaximoQuantV4MarketIntelligenceEngine._variation_similarity(
+                current=current_behavior,
+                prior=prior_behavior,
+                side=side,
+            )
             outcome = MaximoQuantV4MarketIntelligenceEngine._analog_outcome(
                 candles=candles,
                 start=start,
@@ -1297,40 +1500,65 @@ class MaximoQuantV4MarketIntelligenceEngine:
                 horizon=horizon,
                 side=side,
             )
-            candidates.append(
-                {
-                    "start_index": start,
-                    "end_index": start + window - 1,
-                    "similarity": round(similarity, 4),
-                    **outcome,
-                }
-            )
+            payload = {
+                "start_index": start,
+                "end_index": start + window - 1,
+                "similarity": round(similarity, 4),
+                "variation_similarity": round(variation_similarity, 4),
+                "variation_family": MaximoQuantV4MarketIntelligenceEngine._variation_family(prior_behavior),
+                **outcome,
+            }
+            if similarity >= 0.72:
+                candidates.append({"match_type": "shape_exact", **payload})
+            if variation_similarity >= 0.68:
+                variation_candidates.append({"match_type": "structural_variant", **payload})
 
         candidates = sorted(candidates, key=lambda item: item["similarity"], reverse=True)[:max_matches]
-        if not candidates:
+        variation_candidates = sorted(
+            variation_candidates,
+            key=lambda item: (item["variation_similarity"], item["similarity"]),
+            reverse=True,
+        )[:max_matches]
+        non_exact_variations = [item for item in variation_candidates if item["similarity"] < 0.72]
+        combined_candidates = candidates + non_exact_variations[: max(0, max_matches - len(candidates))]
+        if not combined_candidates:
             return {
                 "status": "no_close_match",
-                "summary": "No aparecieron analogías M5 suficientemente parecidas en la muestra reciente.",
+                "summary": "No aparecieron analogías M5 ni variaciones estructurales suficientemente parecidas en la muestra reciente.",
                 "matches_found": 0,
+                "variant_matches_found": 0,
                 "dominant_family": dominant_family,
                 "market_regime": market_regime,
             }
 
-        wins = sum(1 for item in candidates if item["outcome"] == "favorable")
-        failures = sum(1 for item in candidates if item["outcome"] == "failed")
-        neutrals = len(candidates) - wins - failures
-        win_rate = round(wins / len(candidates), 4)
-        failure_rate = round(failures / len(candidates), 4)
+        wins = sum(1 for item in combined_candidates if item["outcome"] == "favorable")
+        failures = sum(1 for item in combined_candidates if item["outcome"] == "failed")
+        neutrals = len(combined_candidates) - wins - failures
+        win_rate = round(wins / len(combined_candidates), 4)
+        failure_rate = round(failures / len(combined_candidates), 4)
         if win_rate >= 0.58 and wins >= failures + 1:
             bias = "favorable"
         elif failure_rate >= 0.42 and failures > wins:
             bias = "unfavorable"
         else:
             bias = "mixed"
+        variant_wins = sum(1 for item in variation_candidates if item["outcome"] == "favorable")
+        variant_failures = sum(1 for item in variation_candidates if item["outcome"] == "failed")
+        variant_total = len(variation_candidates)
+        variant_win_rate = round(variant_wins / variant_total, 4) if variant_total else 0.0
+        variant_failure_rate = round(variant_failures / variant_total, 4) if variant_total else 0.0
+        if variant_total and variant_win_rate >= 0.58 and variant_wins >= variant_failures + 1:
+            variant_bias = "favorable"
+        elif variant_total and variant_failure_rate >= 0.42 and variant_failures > variant_wins:
+            variant_bias = "unfavorable"
+        elif variant_total:
+            variant_bias = "mixed"
+        else:
+            variant_bias = "none"
 
         summary = (
-            f"Analogías históricas M5 para {side}: {len(candidates)} similares, "
-            f"{wins} favorables, {failures} fallidas, {neutrals} neutras; sesgo={bias}."
+            f"Analogías M5 para {side}: {len(candidates)} exactas y {len(variation_candidates)} variaciones, "
+            f"{wins} favorables, {failures} fallidas, {neutrals} neutras; sesgo={bias}, variantes={variant_bias}."
         )
         return {
             "status": "available",
@@ -1341,16 +1569,36 @@ class MaximoQuantV4MarketIntelligenceEngine:
             "lookback_candles": len(candles),
             "window_candles": window,
             "horizon_candles": horizon,
-            "matches_found": len(candidates),
+            "matches_found": len(combined_candidates),
+            "exact_matches_found": len(candidates),
+            "variant_matches_found": len(variation_candidates),
             "favorable_count": wins,
             "failed_count": failures,
             "neutral_count": neutrals,
             "win_rate": win_rate,
             "failure_rate": failure_rate,
             "bias": bias,
+            "variant_bias": variant_bias,
+            "variant_win_rate": variant_win_rate,
+            "variant_failure_rate": variant_failure_rate,
             "summary": summary,
-            "top_matches": candidates[:5],
-            "note": "Comparación observacional; no ejecuta ni desbloquea órdenes sin confirmación final.",
+            "top_matches": combined_candidates[:5],
+            "pattern_variation_memory": {
+                "status": "available" if variation_candidates else "watching",
+                "current_variation_family": MaximoQuantV4MarketIntelligenceEngine._variation_family(current_behavior),
+                "current_behavior": current_behavior,
+                "variant_matches_found": len(variation_candidates),
+                "variant_bias": variant_bias,
+                "variant_win_rate": variant_win_rate,
+                "variant_failure_rate": variant_failure_rate,
+                "top_variant_matches": variation_candidates[:5],
+                "interpretation": (
+                    "El mercado no necesita dibujar el mismo patrón exacto; estas variaciones estructurales ayudan a reconocer oportunidades equivalentes."
+                    if variation_candidates
+                    else "No hay suficientes variaciones estructurales cercanas para reforzar la lectura."
+                ),
+            },
+            "note": "Comparación observacional por patrón exacto y variaciones; no ejecuta ni desbloquea órdenes sin confirmación final.",
         }
 
     @staticmethod
@@ -1390,6 +1638,69 @@ class MaximoQuantV4MarketIntelligenceEngine:
             return 0.0
         avg_abs_diff = sum(abs(a - b) for a, b in zip(current, prior)) / len(current)
         return max(0.0, min(1.0, 1.0 - avg_abs_diff))
+
+    @staticmethod
+    def _window_behavior_features(candles: list[Any]) -> dict[str, Any]:
+        if not candles:
+            return {"status": "empty"}
+        highs = [MaximoQuantV4MarketIntelligenceEngine._candle_value(item, "high") for item in candles]
+        lows = [MaximoQuantV4MarketIntelligenceEngine._candle_value(item, "low") for item in candles]
+        closes = [MaximoQuantV4MarketIntelligenceEngine._candle_value(item, "close") for item in candles]
+        opens = [MaximoQuantV4MarketIntelligenceEngine._candle_value(item, "open") for item in candles]
+        price_range = max(max(highs) - min(lows), 0.0001)
+        net_change = closes[-1] - closes[0]
+        avg_body = sum(abs(close - open_price) for open_price, close in zip(opens, closes)) / len(candles)
+        avg_range = sum(max(high - low, 0.0001) for high, low in zip(highs, lows)) / len(candles)
+        upper_wicks = [high - max(open_price, close) for open_price, high, close in zip(opens, highs, closes)]
+        lower_wicks = [min(open_price, close) - low for open_price, low, close in zip(opens, lows, closes)]
+        close_location = (closes[-1] - min(lows)) / price_range
+        impulse = abs(net_change) / price_range
+        body_pressure = avg_body / max(avg_range, 0.0001)
+        compression = price_range / max(sum(abs(closes[idx] - closes[idx - 1]) for idx in range(1, len(closes))), 0.0001)
+        direction = "up" if net_change > price_range * 0.12 else "down" if net_change < -price_range * 0.12 else "sideways"
+        wick_bias = "upper_sweep" if max(upper_wicks) > max(lower_wicks) * 1.25 else "lower_sweep" if max(lower_wicks) > max(upper_wicks) * 1.25 else "balanced"
+        structure = "expansion" if impulse >= 0.55 and body_pressure >= 0.45 else "compression" if compression <= 0.45 else "rotation"
+        return {
+            "status": "available",
+            "direction": direction,
+            "structure": structure,
+            "wick_bias": wick_bias,
+            "close_location": round(close_location, 4),
+            "impulse": round(impulse, 4),
+            "body_pressure": round(body_pressure, 4),
+            "compression": round(compression, 4),
+        }
+
+    @staticmethod
+    def _variation_similarity(*, current: dict[str, Any], prior: dict[str, Any], side: str) -> float:
+        if current.get("status") != "available" or prior.get("status") != "available":
+            return 0.0
+        score = 0.0
+        if current.get("direction") == prior.get("direction"):
+            score += 0.22
+        if current.get("structure") == prior.get("structure"):
+            score += 0.2
+        if current.get("wick_bias") == prior.get("wick_bias"):
+            score += 0.16
+        side = str(side or "").upper()
+        if side == "SELL" and prior.get("wick_bias") == "upper_sweep":
+            score += 0.08
+        if side == "BUY" and prior.get("wick_bias") == "lower_sweep":
+            score += 0.08
+        for key, weight in [("close_location", 0.14), ("impulse", 0.14), ("body_pressure", 0.12), ("compression", 0.1)]:
+            diff = abs(float(current.get(key) or 0.0) - float(prior.get(key) or 0.0))
+            score += max(0.0, weight * (1.0 - min(1.0, diff)))
+        return max(0.0, min(1.0, score))
+
+    @staticmethod
+    def _variation_family(features: dict[str, Any]) -> str:
+        if features.get("status") != "available":
+            return "unknown"
+        return "{direction}_{structure}_{wick}".format(
+            direction=features.get("direction"),
+            structure=features.get("structure"),
+            wick=features.get("wick_bias"),
+        )
 
     @staticmethod
     def _analog_outcome(

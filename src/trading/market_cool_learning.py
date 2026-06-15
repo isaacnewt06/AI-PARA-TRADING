@@ -308,7 +308,7 @@ class MarketCoolLearningMemory:
         else:
             status = "weak"
 
-        if policy in {"BUY", "SELL"} and status in {"aligned", "partial"}:
+        if policy in {"BUY", "SELL"} and side in {"BUY", "SELL"} and policy == side and status in {"aligned", "partial"}:
             course_action = policy
         elif side in {"BUY", "SELL"} and status == "aligned":
             course_action = side

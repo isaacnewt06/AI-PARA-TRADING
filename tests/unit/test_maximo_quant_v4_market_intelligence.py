@@ -317,7 +317,46 @@ def test_historical_pattern_analogs_detect_favorable_buy_memory(tmp_path: Path) 
     assert analogs["matches_found"] >= 2
     assert analogs["favorable_count"] > analogs["failed_count"]
     assert analogs["bias"] in {"favorable", "mixed"}
-    assert "Analogías históricas M5 para BUY" in analogs["summary"]
+    assert "Analogías M5 para BUY" in analogs["summary"]
+    assert "pattern_variation_memory" in analogs
+
+
+def test_historical_pattern_analogs_include_structural_variants(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data"), "ECONOMIC_CALENDAR_AUTO_SYNC": "false"})
+    engine = MaximoQuantV4MarketIntelligenceEngine(settings)
+    candles: list[dict] = []
+
+    def add_variant(base: float) -> None:
+        closes = [base, base + 3.0, base + 3.4, base + 3.8, base + 4.1, base + 4.4, base + 4.7, base + 5.0, base + 5.3, base + 5.6, base + 5.8, base + 6.0]
+        for idx, close_price in enumerate(closes):
+            open_price = close_price - (2.2 if idx == 1 else 0.18)
+            candles.append({"open": open_price, "high": close_price + 0.25, "low": open_price - 0.2, "close": close_price})
+        for idx in range(8):
+            close_price = base + 6.2 + idx * 0.55
+            candles.append({"open": close_price - 0.12, "high": close_price + 0.25, "low": close_price - 0.2, "close": close_price})
+
+    add_variant(100.0)
+    add_variant(120.0)
+    for idx in range(20):
+        price = 145.0 + (idx % 4) * 0.15
+        candles.append({"open": price, "high": price + 0.25, "low": price - 0.25, "close": price + 0.05})
+    for idx in range(12):
+        open_price = 180.0 + idx * 0.45
+        close_price = open_price + 0.32
+        candles.append({"open": open_price, "high": close_price + 0.2, "low": open_price - 0.15, "close": close_price})
+
+    analogs = engine._historical_pattern_analogs(
+        snapshot={"candles": {"M5": candles}},
+        side="BUY",
+        dominant_family="OB Rejection",
+        market_regime="NORMAL",
+    )
+
+    variation_memory = analogs["pattern_variation_memory"]
+    assert analogs["status"] == "available"
+    assert variation_memory["variant_matches_found"] > 0
+    assert variation_memory["top_variant_matches"][0]["match_type"] == "structural_variant"
+    assert "mismo patrón exacto" in variation_memory["interpretation"]
 
 
 def test_side_probability_comparison_can_watch_sell_alternative(tmp_path: Path) -> None:
@@ -551,8 +590,14 @@ def test_watch_projection_reports_auto_selected_course_protocol(tmp_path: Path) 
     )
 
     course = projection["professional_decision_matrix"]["course_pattern_memory"]
+    brain = projection["extracted_knowledge_operational_brain"]
     assert "SENSEI_MANUAL_BIAS_PROTOCOL" in course["auto_selected_protocols"]
     assert "Protocolos aprendidos auto-seleccionados" in " ".join(projection["pattern_matches"])
+    assert brain["status"] == "primary_operational_brain"
+    assert brain["role"] == "motor_principal_de_decision"
+    assert brain["protocol_priority"] == "sensei_bias_high"
+    assert "SENSEI_MANUAL_BIAS_PROTOCOL" in brain["auto_selected_protocols"]
+    assert "manual/sensei_manual_bias_protocol.md" in " ".join(brain["source_files"])
 
 
 def test_session_opportunity_scores_london_new_york_focus(tmp_path: Path) -> None:

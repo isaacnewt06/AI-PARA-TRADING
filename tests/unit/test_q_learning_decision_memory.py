@@ -60,6 +60,97 @@ def test_q_learning_records_experience_and_updates_table(tmp_path: Path) -> None
     assert (tmp_path / "q_report.md").exists()
 
 
+def test_q_learning_records_position_management_feedback(tmp_path: Path) -> None:
+    memory = _memory(tmp_path)
+
+    update = memory.record_cycle(
+        symbol="XAUUSDm",
+        intelligence=_intelligence(),
+        active_watch={"status": "TRIGGERED", "progress": "triggered", "side": "SELL"},
+        active_watch_metrics={"watch_health": "improving", "watch_probability_to_execute": 0.72},
+        watch_execution_policy={"watch_policy_action": "PREPARE_REDUCED"},
+        execution_risk_decision={"allowed_risk_mode": "reduced"},
+        signal={"direction": "sell", "selected_rr": 1.6},
+        execution_status="dry_run_signal_detected",
+        controlled_demo_survival_protocol={"allowed": True},
+        position_management={
+            "feedback": {
+                "be_applied": True,
+                "partial_taken": False,
+                "trailing_applied": False,
+                "fast_exit_taken": True,
+                "gave_back_profit": False,
+                "momentum_decay_detected": True,
+                "invalid_partial_fallback": True,
+                "actions_taken": ["partial_skipped_min_lot_fallback", "fast_exit"],
+            }
+        },
+    )
+
+    experience = update["latest_experience"]
+    assert experience["position_management_feedback"]["be_applied"] is True
+    assert "fast_exit" in experience["position_management_actions"]
+    assert experience["reward"] > 0.2
+    assert "salio rapido" in experience["reward_reason"]
+
+
+def test_q_learning_penalizes_giveback_without_protection(tmp_path: Path) -> None:
+    memory = _memory(tmp_path)
+
+    update = memory.record_cycle(
+        symbol="XAUUSDm",
+        intelligence=_intelligence(),
+        active_watch={"status": "TRIGGERED", "progress": "triggered", "side": "SELL"},
+        active_watch_metrics={"watch_health": "deteriorating", "watch_probability_to_execute": 0.42},
+        watch_execution_policy={"watch_policy_action": "OBSERVE"},
+        execution_risk_decision={"allowed_risk_mode": "reduced"},
+        signal={"direction": "sell", "selected_rr": 1.2},
+        execution_status="dry_run_signal_detected",
+        controlled_demo_survival_protocol={"allowed": True},
+        position_management={
+            "feedback": {
+                "be_applied": False,
+                "fast_exit_taken": False,
+                "gave_back_profit": True,
+                "momentum_decay_detected": True,
+                "actions_taken": ["monitor"],
+            }
+        },
+    )
+
+    assert update["latest_experience"]["reward"] < 0
+    assert "devolvio ganancia" in update["latest_experience"]["reward_reason"]
+
+
+def test_q_learning_records_final_confirmation_feedback(tmp_path: Path) -> None:
+    memory = _memory(tmp_path)
+
+    update = memory.record_cycle(
+        symbol="XAUUSDm",
+        intelligence=_intelligence(),
+        active_watch={"status": "TRIGGERED", "progress": "triggered", "side": "SELL"},
+        active_watch_metrics={"watch_health": "improving", "watch_probability_to_execute": 0.72},
+        watch_execution_policy={"watch_policy_action": "PREPARE_REDUCED"},
+        execution_risk_decision={"allowed_risk_mode": "reduced"},
+        signal={"direction": "sell", "selected_rr": 1.6},
+        execution_status="dry_run_signal_detected",
+        controlled_demo_survival_protocol={"allowed": True},
+        final_confirmation={
+            "decision": "EXECUTE",
+            "final_confirmation_score": 78.0,
+            "entry_timing_quality": "strong",
+            "trap_risk_score": 0.2,
+            "late_entry_risk": 0.1,
+            "zone_validity": "strong",
+        },
+    )
+
+    experience = update["latest_experience"]
+    assert experience["final_confirmation_score"] == 78.0
+    assert experience["final_confirmation_decision"] == "EXECUTE"
+    assert "confirmacion final valida" in experience["reward_reason"]
+
+
 def test_q_learning_replay_uses_priority_experiences(tmp_path: Path) -> None:
     memory = _memory(tmp_path)
     for _ in range(3):
@@ -131,6 +222,38 @@ def test_q_learning_overlay_keeps_session_pattern_signal_reduced(tmp_path: Path)
     assert result["allowed_risk_mode"] == "reduced"
     assert result["max_risk_multiplier"] == 0.25
     assert result["execution_mode"] == "session_q_learning_reduced_execution"
+
+
+def test_q_learning_overlay_keeps_clean_armed_retest_signal_reduced(tmp_path: Path) -> None:
+    memory = _memory(tmp_path)
+    decision = {
+        "q_policy_action": "HOLD",
+        "risk_bias": "protect_capital",
+        "state_key": "state",
+        "q_values": {"HOLD": 0.5, "BUY": 0.1, "SELL": 0.0, "CLOSE": 0.0},
+    }
+
+    result = memory.apply_risk_overlay(
+        q_learning_decision=decision,
+        execution_risk_decision={"can_execute": True, "allowed_risk_mode": "reduced", "max_risk_multiplier": 0.35},
+        signal={
+            "direction": "buy",
+            "signal_type": "ARMED_RETEST_REDUCED_SIGNAL",
+            "confidence": 78,
+            "selected_rr": 1.25,
+            "entry_price": 4500.0,
+            "stop_price": 4497.0,
+            "target_price": 4504.0,
+            "micro_bos": True,
+            "manual_bias_confirmation": True,
+            "continuation_momentum": True,
+        },
+    )
+
+    assert result["can_execute"] is True
+    assert result["allowed_risk_mode"] == "reduced"
+    assert result["max_risk_multiplier"] == 0.25
+    assert result["execution_mode"] == "armed_retest_q_hold_reduced_execution"
 
 
 def test_q_learning_seeds_from_historical_backtest_trades(tmp_path: Path) -> None:
@@ -319,6 +442,39 @@ def test_q_learning_strategy_harmony_conflict_blocks_signal(tmp_path: Path) -> N
     assert result["can_execute"] is False
     assert result["execution_status"] == "blocked_by_q_learning_strategy_harmony"
     assert result["allowed_risk_mode"] == "blocked"
+
+
+def test_q_learning_weak_stale_memory_conflict_allows_reduced_risk(tmp_path: Path) -> None:
+    memory = _memory(tmp_path)
+    decision = {
+        "q_policy_action": "SELL",
+        "risk_bias": "reduce_or_pause",
+        "state_key": "state",
+        "value_gap": 0.05,
+        "q_values": {"HOLD": 0.0, "BUY": -0.04, "SELL": 0.05, "CLOSE": 0.0},
+        "strategy_harmony_matrix": {
+            "status": "conflicted",
+            "harmony_score": 0.62,
+            "selected_side": "BUY",
+            "agreement_ratio": 0.75,
+            "layer_agreement_score": 1.0,
+            "q_value_gap": 0.05,
+            "course_status": "aligned",
+            "course_score": 1.0,
+            "conflicts": ["persistent_q_learning=SELL", "historical_backtest_prior=SELL"],
+        },
+    }
+
+    result = memory.apply_risk_overlay(
+        q_learning_decision=decision,
+        execution_risk_decision={"can_execute": True, "allowed_risk_mode": "normal", "max_risk_multiplier": 1.0},
+        signal={"direction": "buy"},
+    )
+
+    assert result["can_execute"] is True
+    assert result["allowed_risk_mode"] == "reduced"
+    assert result["max_risk_multiplier"] == 0.25
+    assert result["execution_mode"] == "q_learning_weak_conflict_reduced_execution"
 
 
 def test_q_learning_mixed_strategy_harmony_forces_reduced_risk(tmp_path: Path) -> None:

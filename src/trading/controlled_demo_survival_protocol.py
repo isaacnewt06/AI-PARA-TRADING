@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from src.trading.execution_environment_policy import limits_for_symbol
+
 
 @dataclass(frozen=True, slots=True)
 class ControlledDemoSurvivalProtocolV1:
@@ -76,6 +78,10 @@ class ControlledDemoSurvivalProtocolV1:
         )
         event_action = str(event_risk.get("action") or environment.get("event_action") or "unknown").lower()
         execution_viability = str(environment.get("execution_viability") or "UNKNOWN").upper()
+        execution_limits = limits_for_symbol(symbol)
+        max_spread = execution_limits.max_spread
+        max_slippage = execution_limits.max_slippage
+        max_latency = execution_limits.max_latency
 
         blockers: list[str] = []
         if not applies:
@@ -105,15 +111,15 @@ class ControlledDemoSurvivalProtocolV1:
             blockers.append("asia_blocked")
         if spread is None:
             blockers.append("live_spread_unavailable")
-        elif spread > self.max_spread:
+        elif spread > max_spread:
             blockers.append("spread_above_survival_threshold")
         if slippage is None:
             blockers.append("slippage_estimate_unavailable")
-        elif slippage > self.max_slippage:
+        elif slippage > max_slippage:
             blockers.append("slippage_above_survival_threshold")
         if latency is None:
             blockers.append("latency_estimate_unavailable")
-        elif latency > self.max_latency:
+        elif latency > max_latency:
             blockers.append("latency_unsafe")
         if atr_regime not in self.SAFE_ATR_REGIMES:
             blockers.append("atr_regime_not_safe")
@@ -198,9 +204,12 @@ class ControlledDemoSurvivalProtocolV1:
             "requirements": {
                 "validated_sessions": ["ny_am", "ny_pm"],
                 "validated_hours_ny": sorted(self.VALIDATED_NY_AM_HOURS | self.VALIDATED_NY_PM_HOURS),
-                "max_spread": self.max_spread,
-                "max_slippage_estimated": self.max_slippage,
-                "max_latency": self.max_latency,
+                "max_spread": limits_for_symbol(symbol).max_spread,
+                "preferred_spread": limits_for_symbol(symbol).preferred_spread,
+                "hard_spread_limit": limits_for_symbol(symbol).hard_spread,
+                "max_slippage_estimated": limits_for_symbol(symbol).max_slippage,
+                "max_latency": limits_for_symbol(symbol).max_latency,
+                "execution_policy_profile": limits_for_symbol(symbol).profile,
                 "atr_regimes": sorted(self.SAFE_ATR_REGIMES),
                 "event_action": "allow",
                 "execution_viability": "SAFE",

@@ -168,7 +168,7 @@ class KnowledgeLearningCycleApplicationService:
         if options.doc_limit > 0:
             phases[1:1] = [
                 ("rank-documents", lambda: processing.rank_documents(limit=options.doc_limit)),
-                ("process-documents", lambda: processing.process_documents(limit=options.doc_limit)),
+                ("process-documents", lambda: processing.process_top_documents(limit=options.doc_limit)),
                 ("process-external-links", lambda: processing.process_external_links(limit=options.doc_limit)),
             ]
         if options.media_limit > 0:

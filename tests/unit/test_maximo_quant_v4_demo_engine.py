@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,8 +39,19 @@ class _FakeBridge:
                 "M1": {"bars": 500, "first_bar_time": "2026-01-01T00:00:00+00:00", "last_bar_time": self.last_bar_time},
                 "M5": {"bars": 5000, "first_bar_time": "2026-01-01T00:00:00+00:00", "last_bar_time": self.last_bar_time},
                 "H1": {"bars": 2000, "first_bar_time": "2026-01-01T00:00:00+00:00", "last_bar_time": self.last_bar_time},
+                "H4": {"bars": 1000, "first_bar_time": "2026-01-01T00:00:00+00:00", "last_bar_time": self.last_bar_time},
+                "D1": {"bars": 500, "first_bar_time": "2026-01-01T00:00:00+00:00", "last_bar_time": self.last_bar_time},
             },
-            "candles": {"M1": [], "M5": [], "H1": []},
+            "candles": {"M1": [], "M5": [], "H1": [], "H4": [], "D1": []},
+        }
+
+    def read_execution_environment(self, *, symbol: str) -> dict:
+        return {
+            "symbol": symbol,
+            "execution_viability": "SAFE",
+            "live_spread": 0.08,
+            "slippage_estimated": 0.01,
+            "reason": "test execution environment is safe",
         }
 
     def place_demo_market_order(self, **kwargs) -> dict:
@@ -203,6 +215,586 @@ def test_position_management_does_not_move_sl_without_enough_profit(tmp_path: Pa
     assert result["actions"][0]["action"] == "monitor"
 
 
+def test_directional_synchronization_realigns_stale_buy_watch_to_sensei_sell(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
+    candidate = {
+        "direction": "sell",
+        "signal_type": "SENSEI_MANUAL_BIAS_REDUCED_SIGNAL",
+        "manual_bias_confirmation": True,
+        "sl_logical_available": True,
+        "rr_evaluable": True,
+        "entry_price": 4464.0,
+        "stop_price": 4478.0,
+        "target_price": 4436.0,
+    }
+    intelligence = _fake_intelligence_payload(
+        action="WATCH",
+        preferred_side="NEUTRAL",
+        confidence=0.64,
+        setup_maturity=64.0,
+        harmony_score=0.48,
+        operational_family="OB_REJECTION_AGGRESSIVE_WATCH",
+        blockers=[],
+        watch_trigger={
+            "side": "NEUTRAL",
+            "candidate_side": "SELL",
+            "trigger_type": "neutral_observation",
+            "required_conditions": ["El mercado define dirección preferida BUY o SELL."],
+            "missing_for_execute": [
+                "Falta señal operativa confirmada.",
+                "El setup_maturity actual (64.0) aún no supera el umbral de preparacion.",
+            ],
+            "operational_family": "OB_REJECTION_AGGRESSIVE_WATCH",
+            "ob_rejection_families": {},
+        },
+    )
+    ob_families = intelligence["overview"]["market_state"]["ob_rejection_families"]
+    ob_families["manual_bias"] = {"active": True, "side": "SELL", "reduced_signal_candidate": candidate}
+    ob_families["aggressive"] = {
+        "active": True,
+        "side": "SELL",
+        "checks": {"sensei_manual_bias": {"active": True, "side": "SELL", "reduced_signal_candidate": candidate}},
+        "reduced_signal_candidate": candidate,
+    }
+    active_watch = {
+        "symbol": "XAUUSDm",
+        "side": "BUY",
+        "status": "ACTIVE",
+        "trigger_type": "bullish_confirmation",
+        "created_candle_time": "2026-01-01T10:00:00+00:00",
+        "initial_confidence": 0.55,
+        "initial_harmony_score": 0.42,
+        "initial_setup_maturity": 55.0,
+        "missing_for_execute": [],
+    }
+
+    result = engine._apply_directional_synchronization(
+        symbol="XAUUSDm",
+        intelligence=intelligence,
+        active_watch=active_watch,
+        q_learning_decision={"q_policy_action": "SELL", "q_values": {"SELL": 0.16, "BUY": -0.05}},
+        market_pulse={"score": 90.0},
+    )
+
+    assert result["changed"] is True
+    assert result["active_watch"]["side"] == "SELL"
+    assert result["active_watch"]["trigger_type"] == "bearish_confirmation"
+    assert result["intelligence"]["overview"]["market_state"]["preferred_side"] == "SELL"
+    assert result["intelligence"]["execution_readiness"]["setup_maturity"] >= 69.0
+    assert result["intelligence"]["execution_readiness"]["confidence"] >= 0.65
+    assert result["summary"]["executable_bias_sync"] is True
+
+
+def test_directional_synchronization_does_not_boost_when_q_learning_contradicts(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
+    candidate = {
+        "direction": "sell",
+        "signal_type": "SENSEI_MANUAL_BIAS_REDUCED_SIGNAL",
+        "manual_bias_confirmation": True,
+        "sl_logical_available": True,
+        "rr_evaluable": True,
+    }
+    intelligence = _fake_intelligence_payload(
+        action="WATCH",
+        preferred_side="NEUTRAL",
+        confidence=0.64,
+        setup_maturity=64.0,
+        operational_family="OB_REJECTION_AGGRESSIVE_WATCH",
+        blockers=[],
+        watch_trigger={"side": "NEUTRAL", "candidate_side": "SELL", "missing_for_execute": [], "required_conditions": []},
+    )
+    ob_families = intelligence["overview"]["market_state"]["ob_rejection_families"]
+    ob_families["manual_bias"] = {"active": True, "side": "SELL", "reduced_signal_candidate": candidate}
+
+    result = engine._apply_directional_synchronization(
+        symbol="XAUUSDm",
+        intelligence=intelligence,
+        active_watch=None,
+        q_learning_decision={"q_policy_action": "BUY", "q_values": {"SELL": -0.02, "BUY": 0.2}},
+        market_pulse={"score": 90.0},
+    )
+
+    assert result["summary"]["executable_bias_sync"] is False
+    assert result["intelligence"]["execution_readiness"]["setup_maturity"] == 64.0
+
+
+def test_higher_timeframe_context_reads_h4_and_d1_bias(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
+
+    def candles(start: float, step: float, count: int = 24) -> list[dict]:
+        result = []
+        for index in range(count):
+            close = start + (step * index)
+            result.append({"open": close - (step * 0.4), "high": close + 1.0, "low": close - 1.0, "close": close})
+        return result
+
+    context = engine._build_higher_timeframe_context(
+        snapshot={
+            "candles": {
+                "H1": candles(100.0, -0.3),
+                "H4": candles(105.0, -0.6),
+                "D1": candles(110.0, -0.9),
+            }
+        }
+    )
+
+    assert context["status"] == "available"
+    assert context["major_bias"] == "SELL"
+    assert context["timeframes"]["H4"]["bias"] == "SELL"
+    assert context["timeframes"]["D1"]["bias"] == "SELL"
+    assert context["alignment_score"] > 0.9
+
+
+def test_directional_synchronization_uses_higher_timeframe_compass(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
+    intelligence = _fake_intelligence_payload(
+        action="WATCH",
+        preferred_side="NEUTRAL",
+        confidence=0.61,
+        setup_maturity=62.0,
+        blockers=[],
+        watch_trigger={"side": "NEUTRAL", "candidate_side": "NEUTRAL", "missing_for_execute": [], "required_conditions": []},
+    )
+    htf_context = {
+        "status": "available",
+        "major_bias": "SELL",
+        "alignment_score": 1.0,
+        "weighted_bias": {"BUY": 0.0, "SELL": 4.6},
+        "conflicts": [],
+        "timeframes": {
+            "H1": {"bias": "SELL"},
+            "H4": {"bias": "SELL"},
+            "D1": {"bias": "SELL"},
+        },
+    }
+    intelligence = engine._inject_higher_timeframe_context(
+        intelligence=intelligence,
+        higher_timeframe_context=htf_context,
+    )
+
+    result = engine._apply_directional_synchronization(
+        symbol="XAUUSDm",
+        intelligence=intelligence,
+        active_watch=None,
+        q_learning_decision={"q_policy_action": "SELL", "q_values": {"SELL": 0.08, "BUY": 0.01}},
+        market_pulse={"score": 84.0},
+    )
+
+    summary = result["summary"]
+    assert summary["higher_timeframe_major_bias"] == "SELL"
+    assert summary["status"] == "synchronized"
+    assert result["intelligence"]["overview"]["market_state"]["preferred_side"] == "SELL"
+    assert result["intelligence"]["watch_trigger"]["trigger_type"] == "bearish_confirmation"
+
+
+def test_synchronized_watch_contract_removes_opposite_side_language(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
+
+    required = engine._synchronized_required_conditions(
+        side="BUY",
+        existing=[
+            "Cierre M5 bajista confirmando rechazo o continuidad a favor de SELL.",
+            "higher_timeframe_bias en SELL o al menos no contradictorio.",
+            "setup_maturity >= 69",
+            "event_action = allow al momento del disparo.",
+        ],
+    )
+    cancel = engine._synchronized_cancel_conditions(
+        side="BUY",
+        existing=[
+            "El lado candidato cambia a BUY.",
+            "higher_timeframe_bias cambia claramente contra SELL.",
+            "harmony_score cae por debajo de 0.35.",
+        ],
+    )
+
+    assert required[0] == "Cierre M5 alcista con micro BOS/continuación a favor de BUY."
+    assert not any("higher_timeframe_bias en SELL" in item for item in required)
+    assert "El lado candidato cambia a SELL." in cancel
+    assert "higher_timeframe_bias cambia claramente contra BUY." in cancel
+    assert "El lado candidato cambia a BUY." not in cancel
+
+
+def test_position_management_skips_invalid_min_lot_partial_and_records_history(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    bridge = _FakeBridge()
+    engine = MaximoQuantV4DemoEngine(settings, bridge=bridge)  # type: ignore[arg-type]
+    snapshot = {
+        "timeframes": {"M1": {"last_bar_time": "2026-01-01T10:00:00+00:00"}, "M5": {"last_bar_time": "2026-01-01T10:00:00+00:00"}},
+        "candles": {"M1": [{"open": 95.0, "high": 96.0, "low": 94.0, "close": 94.0}], "M5": [{"open": 95.0, "high": 96.0, "low": 94.0, "close": 94.0}]},
+    }
+    positions = [
+        {
+            "ticket": 3,
+            "type": 1,
+            "symbol": "XAUUSDm",
+            "price_open": 100.0,
+            "sl": 110.0,
+            "tp": 85.0,
+            "volume": 0.01,
+            "price_current": 94.0,
+            "profit": 6.0,
+        }
+    ]
+
+    result = engine._manage_open_positions(symbol="XAUUSDm", positions=positions, snapshot=snapshot, dry_run=False)
+
+    assert bridge.partial_closed == []
+    assert any(action["action"] == "partial_skipped_min_lot_fallback" for action in result["actions"])
+    assert any(action["action"] == "protect_sl" for action in result["actions"])
+    assert result["feedback"]["invalid_partial_fallback"] is True
+    lines = engine.position_management_history_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) >= 2
+    assert json.loads(lines[0])["action_taken"] == "partial_skipped_min_lot_fallback"
+
+
+def test_position_management_fast_exits_when_profit_is_given_back_after_mfe(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    bridge = _FakeBridge()
+    engine = MaximoQuantV4DemoEngine(settings, bridge=bridge)  # type: ignore[arg-type]
+    engine.position_management_state_path.write_text(
+        json.dumps({"4": {"best_price": 94.0, "max_favorable_r": 0.6}}),
+        encoding="utf-8",
+    )
+    snapshot = {
+        "timeframes": {"M1": {"last_bar_time": "2026-01-01T10:00:00+00:00"}, "M5": {"last_bar_time": "2026-01-01T10:00:00+00:00"}},
+        "candles": {"M1": [{"open": 99.0, "high": 101.0, "low": 98.0, "close": 101.0}], "M5": [{"open": 99.0, "high": 101.0, "low": 98.0, "close": 101.0}]},
+    }
+    positions = [
+        {
+            "ticket": 4,
+            "type": 1,
+            "symbol": "XAUUSDm",
+            "price_open": 100.0,
+            "sl": 110.0,
+            "tp": 85.0,
+            "volume": 0.01,
+            "price_current": 101.0,
+            "profit": -1.0,
+        }
+    ]
+
+    result = engine._manage_open_positions(symbol="XAUUSDm", positions=positions, snapshot=snapshot, dry_run=False)
+
+    assert result["updates_sent"] == 1
+    assert bridge.partial_closed[0]["volume_lots"] == 0.01
+    assert result["actions"][0]["action"] == "fast_exit"
+    assert result["feedback"]["fast_exit_taken"] is True
+    assert result["feedback"]["gave_back_profit"] is True
+    history = [json.loads(line) for line in engine.position_management_history_path.read_text(encoding="utf-8").splitlines()]
+    assert history[-1]["action_taken"] == "fast_exit"
+
+
+def test_position_management_fast_exits_near_breakeven_after_early_scalp_mfe(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    bridge = _FakeBridge()
+    engine = MaximoQuantV4DemoEngine(settings, bridge=bridge)  # type: ignore[arg-type]
+    engine.position_management_state_path.write_text(
+        json.dumps({"44": {"best_price": 96.8, "max_favorable_r": 0.32}}),
+        encoding="utf-8",
+    )
+    snapshot = {
+        "timeframes": {"M1": {"last_bar_time": "2026-01-01T10:00:00+00:00"}, "M5": {"last_bar_time": "2026-01-01T10:00:00+00:00"}},
+        "candles": {"M1": [{"open": 99.0, "high": 100.0, "low": 98.8, "close": 99.6}], "M5": [{"open": 99.0, "high": 100.0, "low": 98.8, "close": 99.6}]},
+    }
+    positions = [
+        {
+            "ticket": 44,
+            "type": 1,
+            "symbol": "XAUUSDm",
+            "price_open": 100.0,
+            "sl": 110.0,
+            "tp": 85.0,
+            "volume": 0.01,
+            "price_current": 99.6,
+            "profit": 0.4,
+        }
+    ]
+
+    result = engine._manage_open_positions(symbol="XAUUSDm", positions=positions, snapshot=snapshot, dry_run=False)
+
+    assert result["updates_sent"] == 1
+    assert bridge.partial_closed[0]["volume_lots"] == 0.01
+    assert result["actions"][0]["action"] == "fast_exit"
+    assert "después de +0.3R" in result["actions"][0]["reason"]
+    history = [json.loads(line) for line in engine.position_management_history_path.read_text(encoding="utf-8").splitlines()]
+    assert history[-1]["current_r"] > 0
+    assert history[-1]["action_taken"] == "fast_exit"
+    state = json.loads(engine.position_management_state_path.read_text(encoding="utf-8"))
+    assert state["_reentry_cooldowns"][0]["side"] == "SELL"
+    assert "fast exit" in state["_reentry_cooldowns"][0]["reason"]
+
+
+def test_fast_exit_state_creates_reentry_cooldown_below_old_mfe_threshold(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    bridge = _FakeBridge()
+    engine = MaximoQuantV4DemoEngine(settings, bridge=bridge)  # type: ignore[arg-type]
+
+    cooldown = engine._reentry_cooldown_from_position_state(
+        payload={
+            "symbol": "XAUUSDm",
+            "side": "BUY",
+            "entry": 4508.0,
+            "current": 4508.4,
+            "best_price": 4514.0,
+            "worst_price": 4507.5,
+            "initial_stop": 4489.0,
+            "initial_risk": 19.0,
+            "max_favorable_r": 0.33,
+            "fast_exit_taken": True,
+            "closed_by_fast_exit": True,
+            "closed_reason": "MAXIMO fast exit: zona perdió momentum.",
+        },
+        symbol="XAUUSDm",
+    )
+
+    assert cooldown is not None
+    assert cooldown["side"] == "BUY"
+    assert cooldown["max_favorable_r"] == 0.33
+    assert "fast exit" in cooldown["reason"]
+
+
+def test_position_management_uses_initial_risk_after_sl_is_protected(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    bridge = _FakeBridge()
+    engine = MaximoQuantV4DemoEngine(settings, bridge=bridge)  # type: ignore[arg-type]
+    engine.position_management_state_path.write_text(
+        json.dumps({"5": {"initial_stop": 95.0, "initial_risk": 5.0, "best_price": 103.0, "max_favorable_r": 0.6}}),
+        encoding="utf-8",
+    )
+    snapshot = {
+        "timeframes": {"M1": {"last_bar_time": "2026-01-01T10:00:00+00:00"}, "M5": {"last_bar_time": "2026-01-01T10:00:00+00:00"}},
+        "candles": {"M1": [{"open": 102.5, "high": 103.2, "low": 102.0, "close": 103.0}], "M5": [{"open": 102.5, "high": 103.2, "low": 102.0, "close": 103.0}]},
+    }
+    positions = [
+        {
+            "ticket": 5,
+            "type": 0,
+            "symbol": "XAUUSDm",
+            "price_open": 100.0,
+            "sl": 100.1,
+            "tp": 110.0,
+            "volume": 0.01,
+            "price_current": 103.0,
+            "profit": 3.0,
+        }
+    ]
+
+    result = engine._manage_open_positions(symbol="XAUUSDm", positions=positions, snapshot=snapshot, dry_run=False)
+
+    assert result["actions"][0]["action"] != "skip"
+    history = [json.loads(line) for line in engine.position_management_history_path.read_text(encoding="utf-8").splitlines()]
+    assert history[-1]["mfe_r"] >= 0.6
+    state = json.loads(engine.position_management_state_path.read_text(encoding="utf-8"))
+    assert state["5"]["initial_risk"] == 5.0
+
+
+def test_position_management_creates_reentry_cooldown_after_protected_trade_closes(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    bridge = _FakeBridge()
+    engine = MaximoQuantV4DemoEngine(settings, bridge=bridge)  # type: ignore[arg-type]
+    engine.position_management_state_path.write_text(
+        json.dumps(
+            {
+                "6": {
+                    "symbol": "XAUUSDm",
+                    "side": "BUY",
+                    "entry": 100.0,
+                    "current": 100.3,
+                    "initial_stop": 95.0,
+                    "initial_risk": 5.0,
+                    "target": 110.0,
+                    "best_price": 103.0,
+                    "worst_price": 99.0,
+                    "max_favorable_r": 0.6,
+                    "be_applied": True,
+                    "protection_level": "breakeven_after_0_5r",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    snapshot = {
+        "timeframes": {"M1": {"last_bar_time": "2026-01-01T10:05:00+00:00"}},
+        "candles": {"M1": [{"close": 100.3}]},
+    }
+
+    result = engine._manage_open_positions(symbol="XAUUSDm", positions=[], snapshot=snapshot, dry_run=False)
+
+    assert result["status"] == "inactive"
+    state = json.loads(engine.position_management_state_path.read_text(encoding="utf-8"))
+    assert "6" not in state
+    assert state["_reentry_cooldowns"][0]["side"] == "BUY"
+    assert state["_reentry_cooldowns"][0]["max_favorable_r"] == 0.6
+
+
+def test_reentry_cooldown_blocks_same_side_same_zone_signal(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    bridge = _FakeBridge()
+    engine = MaximoQuantV4DemoEngine(settings, bridge=bridge)  # type: ignore[arg-type]
+    engine.position_management_state_path.write_text(
+        json.dumps(
+            {
+                "_reentry_cooldowns": [
+                    {
+                        "status": "ACTIVE",
+                        "symbol": "XAUUSDm",
+                        "side": "BUY",
+                        "entry": 100.0,
+                        "zone_low": 99.0,
+                        "zone_high": 103.0,
+                        "initial_risk": 5.0,
+                        "expires_at": "2027-01-01T10:25:00+00:00",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = engine._apply_reentry_cooldown_guard(
+        symbol="XAUUSDm",
+        signal={"direction": "buy", "entry_price": 101.0, "stop_price": 96.0, "risk_per_unit": 5.0},
+        execution_risk_decision={"can_execute": True, "allowed_risk_mode": "reduced", "max_risk_multiplier": 0.5},
+    )
+
+    assert result["can_execute"] is False
+    assert result["execution_status"] == "blocked_by_reentry_cooldown"
+    assert result["reentry_cooldown_guard"]["blocked"] is True
+
+
+def test_reentry_cooldown_allows_other_side_or_fresh_zone(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    bridge = _FakeBridge()
+    engine = MaximoQuantV4DemoEngine(settings, bridge=bridge)  # type: ignore[arg-type]
+    engine.position_management_state_path.write_text(
+        json.dumps(
+            {
+                "_reentry_cooldowns": [
+                    {
+                        "status": "ACTIVE",
+                        "symbol": "XAUUSDm",
+                        "side": "BUY",
+                        "entry": 100.0,
+                        "zone_low": 99.0,
+                        "zone_high": 103.0,
+                        "initial_risk": 5.0,
+                        "expires_at": "2027-01-01T10:25:00+00:00",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    opposite_side = engine._apply_reentry_cooldown_guard(
+        symbol="XAUUSDm",
+        signal={"direction": "sell", "entry_price": 101.0, "stop_price": 106.0, "risk_per_unit": 5.0},
+        execution_risk_decision={"can_execute": True, "allowed_risk_mode": "reduced", "max_risk_multiplier": 0.5},
+    )
+    fresh_zone = engine._apply_reentry_cooldown_guard(
+        symbol="XAUUSDm",
+        signal={"direction": "buy", "entry_price": 112.0, "stop_price": 107.0, "risk_per_unit": 5.0},
+        execution_risk_decision={"can_execute": True, "allowed_risk_mode": "reduced", "max_risk_multiplier": 0.5},
+    )
+
+    assert opposite_side["can_execute"] is True
+    assert fresh_zone["can_execute"] is True
+
+
+def test_reduced_signal_quality_gate_blocks_wait_retest_execution(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
+
+    result = engine._apply_execution_quality_gate(
+        execution_risk_decision={"can_execute": True, "allowed_risk_mode": "reduced", "max_risk_multiplier": 0.5},
+        signal={"direction": "buy", "signal_type": "SENSEI_MANUAL_BIAS_REDUCED_SIGNAL"},
+        positions=[],
+        final_confirmation={"final_confirmation_score": 60.0},
+        entry_quality={"entry_quality_score": 55.0, "decision": "WAIT_RETEST"},
+        execution_readiness={"execution_readiness_score": 62.0},
+        armed_retest={"action": "ARMED_RETEST_DROP"},
+    )
+
+    assert result["can_execute"] is False
+    assert result["execution_status"] == "blocked_by_reduced_signal_quality_gate"
+
+
+def test_reduced_signal_quality_gate_allows_clean_execution_ready(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
+
+    result = engine._apply_execution_quality_gate(
+        execution_risk_decision={"can_execute": True, "allowed_risk_mode": "reduced", "max_risk_multiplier": 0.5},
+        signal={"direction": "sell", "signal_type": "SENSEI_MANUAL_BIAS_REDUCED_SIGNAL"},
+        positions=[],
+        final_confirmation={"final_confirmation_score": 78.0},
+        entry_quality={"entry_quality_score": 79.0, "decision": "EXECUTION_READY"},
+        execution_readiness={"execution_readiness_score": 82.0},
+        armed_retest={"action": "ARMED_RETEST_DROP"},
+    )
+
+    assert result["can_execute"] is True
+
+
+def test_same_cycle_fast_exit_guard_blocks_same_side_reentry(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
+
+    result = engine._apply_same_cycle_fast_exit_reentry_guard(
+        execution_risk_decision={"can_execute": True, "allowed_risk_mode": "reduced", "max_risk_multiplier": 0.5},
+        signal={"direction": "buy", "signal_type": "SENSEI_MANUAL_BIAS_REDUCED_SIGNAL"},
+        position_management={
+            "actions": [
+                {
+                    "action": "fast_exit",
+                    "side": "BUY",
+                    "reason": "recuperó entrada/casi BE después de +0.3R",
+                }
+            ]
+        },
+    )
+
+    assert result["can_execute"] is False
+    assert result["execution_status"] == "blocked_by_same_cycle_fast_exit_reentry"
+
+
+def test_market_pulse_blocks_dead_market_execution(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
+    pulse = {"score": 24.0, "label": "dead_market"}
+
+    result = engine._apply_market_pulse_risk_overlay(
+        execution_risk_decision={"can_execute": True, "allowed_risk_mode": "normal", "max_risk_multiplier": 1.0},
+        market_pulse=pulse,
+        signal={"direction": "sell"},
+    )
+
+    assert result["can_execute"] is False
+    assert result["execution_status"] == "blocked_by_market_pulse"
+
+
+def test_market_pulse_reduces_weak_market_execution(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
+    pulse = {"score": 44.0, "label": "observe"}
+
+    result = engine._apply_market_pulse_risk_overlay(
+        execution_risk_decision={"can_execute": True, "allowed_risk_mode": "normal", "max_risk_multiplier": 1.0},
+        market_pulse=pulse,
+        signal={"direction": "buy"},
+    )
+
+    assert result["allowed_risk_mode"] == "reduced"
+    assert result["max_risk_multiplier"] == 0.25
+    assert result["execution_mode"] == "market_pulse_reduced_execution"
+
+
 def test_direction_consistency_guard_blocks_buy_against_sell_thesis(tmp_path: Path) -> None:
     settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
     engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
@@ -260,6 +852,48 @@ def test_direction_consistency_guard_allows_aligned_sell(tmp_path: Path) -> None
     assert result["conflicts"] == []
 
 
+def test_direction_consistency_guard_allows_weak_stale_q_learning_conflict(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
+    intelligence = _fake_intelligence_payload(
+        preferred_side="BUY",
+        watch_trigger={
+            "side": "BUY",
+            "pattern_projection": {
+                "side_probability_comparison": {"selected_side": "BUY"},
+                "professional_decision_matrix": {
+                    "selected_side": "BUY",
+                    "side_assessments": {"BUY": {"probability_to_confirm": 0.91}},
+                    "layer_synchronization": {"status": "synchronized"},
+                    "course_learning_sync": {"status": "aligned", "course_score": 1.0},
+                },
+            },
+        },
+    )
+
+    result = engine._signal_direction_consistency_guard(
+        signal={"direction": "buy"},
+        intelligence=intelligence,
+        active_watch={"side": "BUY"},
+        q_learning_decision={
+            "q_policy_action": "SELL",
+            "value_gap": 0.05,
+            "strategy_harmony_matrix": {
+                "selected_side": "BUY",
+                "agreement_ratio": 0.75,
+                "layer_agreement_score": 1.0,
+                "q_value_gap": 0.05,
+                "course_status": "aligned",
+                "course_score": 1.0,
+                "conflicts": ["persistent_q_learning=SELL", "historical_backtest_prior=SELL"],
+            },
+        },
+    )
+
+    assert result["allowed"] is True
+    assert result["conflicts"] == ["persistent_q_learning_policy"]
+
+
 def test_direction_consistency_guard_allows_valid_countertrend_scalp(tmp_path: Path) -> None:
     settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
     engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
@@ -280,7 +914,17 @@ def test_direction_consistency_guard_allows_valid_countertrend_scalp(tmp_path: P
     )
 
     result = engine._signal_direction_consistency_guard(
-        signal={"direction": "buy", "countertrend_reversal_scalp": True},
+        signal={
+            "direction": "buy",
+            "setup_type": "COUNTERTREND_REVERSAL_SCALP",
+            "countertrend_reversal_scalp": True,
+            "liquidity_sweep": True,
+            "micro_bos": True,
+            "displacement_score": 82,
+            "risk_mode": "reduced",
+            "entry_price": 100.0,
+            "stop_price": 99.7,
+        },
         intelligence=intelligence,
         active_watch={"side": "SELL"},
         q_learning_decision={"q_policy_action": "BUY"},
@@ -288,6 +932,59 @@ def test_direction_consistency_guard_allows_valid_countertrend_scalp(tmp_path: P
 
     assert result["allowed"] is True
     assert "reversal scalp" in result["reason"]
+
+
+def test_direction_consistency_guard_allows_armed_retest_against_stale_q_learning(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
+    intelligence = _fake_intelligence_payload(preferred_side="BUY")
+
+    result = engine._signal_direction_consistency_guard(
+        signal={
+            "direction": "buy",
+            "signal_type": "ARMED_RETEST_REDUCED_SIGNAL",
+            "confidence": 78,
+            "selected_rr": 1.35,
+            "micro_bos": True,
+            "manual_bias_confirmation": True,
+            "continuation_momentum": True,
+        },
+        intelligence=intelligence,
+        active_watch={"side": "BUY"},
+        q_learning_decision={"q_policy_action": "SELL"},
+    )
+
+    assert result["allowed"] is True
+    assert result["conflicts"] == ["persistent_q_learning_policy"]
+    assert result["armed_retest_q_learning_override"] is True
+
+
+def test_direction_consistency_guard_blocks_countertrend_without_scalp_evidence(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())  # type: ignore[arg-type]
+    intelligence = _fake_intelligence_payload(
+        preferred_side="SELL",
+        watch_trigger={
+            "side": "SELL",
+            "pattern_projection": {
+                "side_probability_comparison": {"selected_side": "SELL"},
+                "professional_decision_matrix": {
+                    "selected_side": "SELL",
+                    "side_assessments": {"BUY": {"probability_to_confirm": 0.9}},
+                },
+            },
+        },
+    )
+
+    result = engine._signal_direction_consistency_guard(
+        signal={"direction": "buy", "countertrend_reversal_scalp": True, "displacement_score": 90},
+        intelligence=intelligence,
+        active_watch={"side": "SELL"},
+        q_learning_decision={"q_policy_action": "SELL"},
+    )
+
+    assert result["allowed"] is False
+    assert "COUNTERTREND_REVERSAL_SCALP" in result["reason"]
 
 
 def test_account_risk_sizing_uses_five_percent_base_account_risk(tmp_path: Path) -> None:
@@ -345,6 +1042,9 @@ def test_account_risk_sizing_blocks_when_min_lot_exceeds_ten_percent(tmp_path: P
     assert result["execution_status"] == "blocked_by_min_lot_exceeds_10_percent_account_risk"
     assert result["estimated_order_risk_percent"] == 11.0
     assert result["position_sizing"]["status"] == "blocked"
+    assert result["execution_recovery_plan"]["status"] == "WAIT_FOR_RETEST_WITH_COMPACT_SL"
+    assert "No perseguir" in result["execution_recovery_plan"]["required_conditions"][0]
+    assert result["execution_recovery_plan"]["max_risk_per_unit_for_min_lot"] > 0
 
 
 def test_account_risk_sizing_adjusts_target_by_probability(tmp_path: Path) -> None:
@@ -424,6 +1124,9 @@ def test_demo_engine_dry_run_writes_signal(tmp_path: Path) -> None:
         "market_regime": "EXPANSION",
         "hour_ny": 9,
         "preferred_side": "BUY",
+        "micro_bos": True,
+        "displacement_score": 76,
+        "continuation_momentum": 0.72,
     }
     engine.market_intelligence_engine.run_detailed = lambda symbol: _fake_intelligence_payload(  # type: ignore[method-assign]
         action="EXECUTE",
@@ -477,6 +1180,9 @@ def test_demo_engine_live_requires_confirm_demo(tmp_path: Path) -> None:
         "market_regime": "EXPANSION",
         "hour_ny": 9,
         "preferred_side": "SELL",
+        "micro_bos": True,
+        "displacement_score": 76,
+        "continuation_momentum": 0.72,
     }
     engine.market_intelligence_engine.run_detailed = lambda symbol: _fake_intelligence_payload(  # type: ignore[method-assign]
         action="EXECUTE",
@@ -491,6 +1197,31 @@ def test_demo_engine_live_requires_confirm_demo(tmp_path: Path) -> None:
         assert False, "Expected confirm_demo guard to raise."
     except RuntimeError as exc:
         assert "confirm_demo" in str(exc)
+
+
+def test_resolve_execution_status_uses_ai_chain_not_raw_intelligence_action() -> None:
+    status = MaximoQuantV4DemoEngine._resolve_execution_status(
+        signal={"entry_kind": "market", "direction": "sell"},
+        positions=[],
+        execution_risk_decision={
+            "can_execute": False,
+            "execution_status": "blocked_by_final_confirmation",
+        },
+        dry_run=False,
+    )
+
+    assert status == "blocked_by_final_confirmation"
+
+
+def test_ai_execution_decision_label_reflects_unified_chain() -> None:
+    label = MaximoQuantV4DemoEngine._ai_execution_decision_label(
+        signal={"direction": "sell"},
+        execution_risk_decision={"can_execute": False},
+        final_confirmation={"decision": "BLOCK"},
+        execution_status="blocked_by_final_confirmation",
+    )
+
+    assert label == "BLOCK"
 
 
 def test_demo_engine_blocks_when_market_intelligence_is_defensive(tmp_path: Path) -> None:
@@ -536,7 +1267,8 @@ def test_demo_engine_blocks_when_market_intelligence_is_defensive(tmp_path: Path
 
     result = engine.run(symbol="XAUUSDm", dry_run=False, confirm_demo=True)
 
-    assert result["execution_status"] == "blocked_by_market_intelligence"
+    assert result["execution_status"].startswith("blocked_")
+    assert result["ai_execution_decision"] == "BLOCK"
     assert result["operating_posture"] == "defensive"
     assert bridge.sent is None
 
@@ -1123,6 +1855,100 @@ def test_timeline_prioritizes_important_events_over_watch_updated(tmp_path: Path
     assert timeline[0]["event"] == "WATCH_IMPROVING"
 
 
+def test_armed_retest_signal_can_override_observe_watch_as_reduced(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())
+    decision = engine._execution_risk_binding(
+        signal={
+            "signal_type": "ARMED_RETEST_REDUCED_SIGNAL",
+            "active_family": "ARMED_RETEST",
+            "quality": "B",
+        },
+        intelligence=_fake_intelligence_payload(
+            action="EXECUTE",
+            confidence=0.8,
+            setup_maturity=82.0,
+        ),
+        active_watch={
+            "status": "ACTIVE",
+            "watch_policy_action": "OBSERVE",
+            "allowed_risk_mode": "blocked",
+            "max_risk_multiplier": 0.0,
+            "current_confidence": 0.8,
+            "current_harmony_score": 0.7,
+            "current_setup_maturity": 82.0,
+        },
+        account_is_demo=True,
+    )
+
+    assert decision["can_execute"] is True
+    assert decision["allowed_risk_mode"] == "reduced"
+    assert decision["risk_binding_source"] == "armed_retest"
+
+
+def test_armed_retest_signal_can_override_stale_drop_watch_as_reduced(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())
+    decision = engine._execution_risk_binding(
+        signal={
+            "signal_type": "ARMED_RETEST_REDUCED_SIGNAL",
+            "active_family": "ARMED_RETEST",
+            "quality": "B",
+        },
+        intelligence=_fake_intelligence_payload(
+            action="EXECUTE",
+            confidence=0.81,
+            setup_maturity=82.0,
+        ),
+        active_watch={
+            "status": "ACTIVE",
+            "watch_policy_action": "DROP",
+            "allowed_risk_mode": "blocked",
+            "max_risk_multiplier": 0.0,
+            "current_confidence": 0.81,
+            "current_harmony_score": 0.7,
+            "current_setup_maturity": 82.0,
+        },
+        account_is_demo=True,
+    )
+
+    assert decision["can_execute"] is True
+    assert decision["allowed_risk_mode"] == "reduced"
+    assert decision["risk_binding_source"] == "armed_retest"
+
+
+def test_m1_micro_trigger_can_override_observe_watch_as_reduced(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())
+    decision = engine._execution_risk_binding(
+        signal={
+            "signal_type": "M1_MICRO_TRIGGER_REDUCED_SIGNAL",
+            "active_family": "M1_MICRO_TRIGGER",
+            "quality": "B",
+        },
+        intelligence=_fake_intelligence_payload(
+            action="EXECUTE",
+            confidence=0.78,
+            setup_maturity=80.0,
+        ),
+        active_watch={
+            "status": "ACTIVE",
+            "watch_policy_action": "OBSERVE",
+            "allowed_risk_mode": "blocked",
+            "max_risk_multiplier": 0.0,
+            "current_confidence": 0.78,
+            "current_harmony_score": 0.7,
+            "current_setup_maturity": 80.0,
+        },
+        account_is_demo=True,
+    )
+
+    assert decision["can_execute"] is True
+    assert decision["allowed_risk_mode"] == "reduced"
+    assert decision["max_risk_multiplier"] == 0.25
+    assert decision["risk_binding_source"] == "m1_micro_trigger"
+
+
 def test_improving_increases_probability(tmp_path: Path) -> None:
     settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
     engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())
@@ -1482,6 +2308,153 @@ def test_aggressive_ob_preserves_sensei_manual_bias_signal_identity(tmp_path: Pa
     assert signal["signal_type"] == "SENSEI_MANUAL_BIAS_REDUCED_SIGNAL"
     assert signal["selected_rr"] == 2.0
     assert signal["manual_bias_confirmation"] is True
+
+
+def test_sensei_manual_bias_generates_reduced_signal_without_active_aggressive_family(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())
+    candidate = _aggressive_candidate()
+    candidate.update(
+        {
+            "setup_type": "SENSEI_BIAS_REDUCED",
+            "signal_type": "SENSEI_MANUAL_BIAS_REDUCED_SIGNAL",
+            "signal_time": "2027-01-01T10:00:00+00:00",
+            "manual_bias_confirmation": True,
+            "selected_rr": 2.0,
+        }
+    )
+    intelligence = _aggressive_intelligence(candidate=candidate, confidence=0.74, setup_maturity=74.0)
+    intelligence["overview"]["market_state"]["operational_family"] = "NONE"
+    intelligence["overview"]["market_state"]["ob_rejection_families"]["active_family"] = "NONE"
+    intelligence["overview"]["market_state"]["ob_rejection_families"]["aggressive"]["active"] = False
+    intelligence["overview"]["market_state"]["ob_rejection_families"]["manual_bias"] = {
+        "active": True,
+        "side": "SELL",
+        "reduced_signal_candidate": candidate,
+    }
+
+    signal = engine._build_sensei_manual_bias_reduced_signal(
+        symbol="XAUUSDm",
+        runtime={"strategy_variant": _Variant(), "session_variant": _Session()},
+        intelligence=intelligence,
+        watch_execution_policy={"watch_policy_action": "PREPARE_REDUCED", "allowed_risk_mode": "reduced"},
+    )
+
+    assert signal is not None
+    assert signal["direction"] == "sell"
+    assert signal["signal_type"] == "SENSEI_MANUAL_BIAS_REDUCED_SIGNAL"
+    assert signal["risk_mode"] == "reduced"
+
+
+def test_sensei_manual_bias_does_not_chase_stale_signal(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())
+    candidate = _aggressive_candidate()
+    candidate.update(
+        {
+            "setup_type": "SENSEI_BIAS_REDUCED",
+            "signal_type": "SENSEI_MANUAL_BIAS_REDUCED_SIGNAL",
+            "signal_time": "2020-01-01T10:00:00+00:00",
+            "manual_bias_confirmation": True,
+        }
+    )
+    intelligence = _aggressive_intelligence(candidate=candidate, confidence=0.74, setup_maturity=74.0)
+    intelligence["overview"]["market_state"]["ob_rejection_families"]["manual_bias"] = {
+        "active": True,
+        "side": "SELL",
+        "reduced_signal_candidate": candidate,
+    }
+
+    signal = engine._build_sensei_manual_bias_reduced_signal(
+        symbol="XAUUSDm",
+        runtime={"strategy_variant": _Variant(), "session_variant": _Session()},
+        intelligence=intelligence,
+        watch_execution_policy={"watch_policy_action": "PREPARE_REDUCED", "allowed_risk_mode": "reduced"},
+    )
+
+    assert signal is None
+
+
+def test_missed_opportunity_learning_tracks_unexecuted_sensei_candidate(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())
+    candidate = _aggressive_candidate()
+    candidate.update(
+        {
+            "setup_type": "SENSEI_BIAS_REDUCED",
+            "signal_type": "SENSEI_MANUAL_BIAS_REDUCED_SIGNAL",
+            "signal_time": "2027-01-01T10:00:00+00:00",
+            "manual_bias_confirmation": True,
+            "entry_price": 100.0,
+            "stop_price": 105.0,
+            "target_price": 90.0,
+            "risk_per_unit": 5.0,
+        }
+    )
+    intelligence = _aggressive_intelligence(candidate=candidate, confidence=0.74, setup_maturity=74.0)
+    intelligence["overview"]["market_state"]["ob_rejection_families"]["manual_bias"] = {
+        "active": True,
+        "side": "SELL",
+        "reduced_signal_candidate": candidate,
+    }
+    snapshot = {"candles": {"M1": [{"close": 100.0}]}, "timeframes": {"M1": {"last_bar_time": "2027-01-01T10:00:00+00:00"}}}
+
+    result = engine._track_missed_opportunity_learning(
+        symbol="XAUUSDm",
+        intelligence=intelligence,
+        signal=None,
+        execution_status="no_signal",
+        snapshot=snapshot,
+    )
+
+    assert result["pending_count"] == 1
+    assert result["latest_event"]["event"] == "MISSED_OPPORTUNITY_WATCHED"
+    state = json.loads(engine.missed_opportunity_state_path.read_text(encoding="utf-8"))
+    assert state["pending"][0]["side"] == "SELL"
+
+
+def test_missed_opportunity_learning_confirms_one_r_move(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())
+    engine.missed_opportunity_state_path.write_text(
+        json.dumps(
+            {
+                "pending": [
+                    {
+                        "id": "XAUUSDm|SELL|SENSEI|100",
+                        "symbol": "XAUUSDm",
+                        "side": "SELL",
+                        "signal_type": "SENSEI_MANUAL_BIAS_REDUCED_SIGNAL",
+                        "setup_type": "SENSEI_BIAS_REDUCED",
+                        "entry_price": 100.0,
+                        "stop_price": 105.0,
+                        "target_price": 90.0,
+                        "risk_per_unit": 5.0,
+                        "setup_maturity": 74.0,
+                        "confidence": 0.74,
+                        "expires_at": "2027-01-01T10:45:00+00:00",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    snapshot = {"candles": {"M1": [{"close": 94.8}]}, "timeframes": {"M1": {"last_bar_time": "2027-01-01T10:10:00+00:00"}}}
+
+    result = engine._track_missed_opportunity_learning(
+        symbol="XAUUSDm",
+        intelligence=_aggressive_intelligence(),
+        signal=None,
+        execution_status="no_signal",
+        snapshot=snapshot,
+    )
+
+    assert result["confirmed_missed_count"] == 1
+    assert result["latest_event"]["event"] == "MISSED_OPPORTUNITY_CONFIRMED"
+    history = [json.loads(line) for line in engine.missed_opportunity_history_path.read_text(encoding="utf-8").splitlines()]
+    assert history[-1]["learning_action"] == "increase_autonomous_attention"
+    state = json.loads(engine.missed_opportunity_state_path.read_text(encoding="utf-8"))
+    assert state["pending"] == []
 
 
 def test_aggressive_ob_signal_forces_reduced_risk_even_if_watch_is_normal(tmp_path: Path) -> None:
@@ -2007,6 +2980,31 @@ def test_execute_without_active_watch_and_high_confidence_allows_execution(tmp_p
     assert decision["execution_mode"] == "direct_high_confidence_execution"
 
 
+def test_v56_supervised_signal_without_active_watch_allows_reduced_execution(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())
+    decision = engine._execution_risk_binding(
+        signal={
+            "direction": "buy",
+            "preferred_side": "BUY",
+            "strategy_variant": "v56_aggressive_filtered_b",
+            "setup_type": "AGG",
+            "market_regime": "EXPANSION",
+            "confidence": 0.74,
+            "quant_score": 0.66,
+            "impulse_score": 0.67,
+            "selected_rr": 1.05,
+        },
+        intelligence={"execution_readiness": {"confidence": 0.74}},
+        active_watch=None,
+    )
+
+    assert decision["can_execute"] is True
+    assert decision["allowed_risk_mode"] == "reduced"
+    assert decision["max_risk_multiplier"] == 0.35
+    assert decision["risk_binding_source"] == "v56_supervised_without_watch"
+
+
 def test_demo_report_shows_risk_binding(tmp_path: Path) -> None:
     settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
     bridge = _FakeBridge()
@@ -2289,6 +3287,51 @@ def test_decision_source_audit_detects_learned_knowledge_dominance(tmp_path: Pat
     assert payload["decision_attribution"]["primary_driver"] == "learned_knowledge"
 
 
+def test_decision_source_audit_exposes_extracted_knowledge_brain(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())
+    intelligence = _fake_intelligence_payload(
+        action="WATCH",
+        posture="selective",
+        signal=None,
+        preferred_side="SELL",
+        blockers=[],
+        watch_trigger={
+            "side": "SELL",
+            "pattern_projection": {
+                "extracted_knowledge_operational_brain": {
+                    "status": "primary_operational_brain",
+                    "role": "motor_principal_de_decision",
+                    "selected_side": "SELL",
+                    "auto_selected_protocols": ["SENSEI_MANUAL_BIAS_PROTOCOL"],
+                    "decision_impact": "Preparar SELL desde protocolo aprendido.",
+                }
+            },
+        },
+    )
+
+    payload = engine._build_decision_source_audit(
+        symbol="XAUUSDm",
+        runtime={
+            "strategy_variant": _Variant(),
+            "snapshot": {"strategy_name": "MAXIMO", "parameters": {"allowed_hours_ny": [9]}},
+        },
+        signal=None,
+        execution_status="no_signal",
+        intelligence=intelligence,
+        active_watch=None,
+        watch_execution_policy={"watch_policy_action": "PREPARE_REDUCED"},
+        execution_risk_decision={"can_execute": False, "allowed_risk_mode": "reduced", "decision": "allowed"},
+        account_status={"is_demo": True},
+    )
+
+    brain = payload["learned_knowledge"]["operational_brain"]
+    assert payload["decision_attribution"]["primary_driver"] == "learned_knowledge"
+    assert payload["learned_knowledge_role"] == "motor_principal"
+    assert brain["role"] == "motor_principal_de_decision"
+    assert "SENSEI_MANUAL_BIAS_PROTOCOL" in brain["auto_selected_protocols"]
+
+
 def test_decision_source_audit_detects_base_strategy_dominance(tmp_path: Path) -> None:
     settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
     engine = MaximoQuantV4DemoEngine(settings, bridge=_FakeBridge())
@@ -2419,6 +3462,8 @@ def test_market_coverage_assurance_tracks_four_analysis_corners(tmp_path: Path) 
             "M1": {"bars": 500},
             "M5": {"bars": 5000},
             "H1": {"bars": 2000},
+            "H4": {"bars": 1000},
+            "D1": {"bars": 500},
         }
     }
     pattern_projection = {

@@ -94,7 +94,12 @@ def test_protocol_blocks_high_spread_and_unsafe_latency() -> None:
         signal=_signal(),
         market_state=_market_state(hour_ny=9, atr_ratio=1.2),
         event_risk=_event("allow"),
-        execution_environment=_environment(live_spread=0.18, live_latency=0.25, execution_viability="UNSAFE"),
+        execution_environment=_environment(
+            live_spread=0.42,
+            slippage_estimated=0.42,
+            live_latency=0.25,
+            execution_viability="UNSAFE",
+        ),
     )
 
     assert result["allowed"] is False

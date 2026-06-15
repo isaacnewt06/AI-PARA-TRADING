@@ -65,7 +65,7 @@ class MaximoQuantV4MarketOverviewEngine:
         market_map = self._load_market_map()
         snapshot = self.bridge.read_market_snapshot(
             symbol=symbol,
-            bars_by_timeframe={"M1": 500, "M5": 5000, "H1": 2000},
+            bars_by_timeframe={"M1": 500, "M5": 5000, "H1": 2000, "H4": 1000, "D1": 500},
         )
         analysis = self._analyze_snapshot(
             symbol=symbol,
@@ -169,7 +169,7 @@ class MaximoQuantV4MarketOverviewEngine:
             market_state = {
                 "status": "insufficient_data",
                 "entry_timeframe": "M5",
-                "context_timeframes": ["H4", "H1", "M15"],
+                "context_timeframes": ["D1", "H4", "H1", "M15", "M5"],
             }
             knowledge_alignment = {
                 "matched_context_count": 0,
@@ -193,8 +193,10 @@ class MaximoQuantV4MarketOverviewEngine:
             }
 
         m15 = backtester._resample(m5, "M15")
-        h4 = backtester._resample(h1, "H4")
+        h4 = snapshot.get("H4") or backtester._resample(h1, "H4")
+        d1 = snapshot.get("D1") or backtester._resample(h1, "D1")
         context = {
+            "daily": backtester._context_pack(d1),
             "macro": backtester._context_pack(h4),
             "trend": backtester._context_pack(h1),
             "setup": backtester._context_pack(m15),
@@ -261,9 +263,15 @@ class MaximoQuantV4MarketOverviewEngine:
         latest_highs, latest_lows = backtester._latest_swings(highs, lows, backtester.SWING_LEN)
         daily_open_map = backtester._daily_open_map(entry_candles)
 
+        daily = context.get("daily", {"candles": [], "rows": []})
         macro = context["macro"]
         trend = context["trend"]
         setup = context["setup"]
+        daily_map = (
+            backtester._map_completed_indices(entry_candles, daily["candles"], timedelta(days=1))
+            if daily.get("candles")
+            else [None] * len(entry_candles)
+        )
         macro_map = backtester._map_completed_indices(entry_candles, macro["candles"], timedelta(hours=4))
         trend_map = backtester._map_completed_indices(entry_candles, trend["candles"], timedelta(hours=1))
         setup_map = backtester._map_completed_indices(entry_candles, setup["candles"], timedelta(minutes=15))
@@ -281,6 +289,7 @@ class MaximoQuantV4MarketOverviewEngine:
         atr_mean_value = atr_mean[index]
         range_mean_value = range_mean[index]
         body_avg_value = body_avg[index]
+        daily_idx = daily_map[index]
         macro_idx = macro_map[index]
         trend_idx = trend_map[index]
         setup_idx = setup_map[index]
@@ -299,9 +308,14 @@ class MaximoQuantV4MarketOverviewEngine:
                 "status": "insufficient_indicators",
                 "symbol": symbol,
                 "entry_timeframe": "M5",
-                "context_timeframes": ["H4", "H1", "M15"],
+                "context_timeframes": ["D1", "H4", "H1", "M15", "M5"],
             }
 
+        daily_row = (
+            daily["rows"][daily_idx]
+            if daily_idx is not None and daily.get("rows") and daily_idx < len(daily["rows"])
+            else {"bull": False, "bear": False, "discount": False, "premium": False}
+        )
         candle_range = max(candle.high - candle.low, 1e-9)
         candle_body = abs(candle.close - candle.open)
         body_pct = candle_body / candle_range * 100.0
@@ -561,12 +575,48 @@ class MaximoQuantV4MarketOverviewEngine:
             micro_bos=ob_rejection_families["aggressive"]["checks"].get("micro_bos_sell", False),
             wick_pct=upper_wick_pct,
         )
+        daily_bias = self._bias_from_row(daily_row)
+        macro_bias = self._bias_from_row(macro_row)
+        trend_bias = self._bias_from_row(trend_row)
+        setup_bias = self._bias_from_row(setup_row)
+        local_bias = "BUY" if local_bull else "SELL" if local_bear else "NEUTRAL"
+        day_bias = "BUY" if candle.close > day_open else "SELL" if candle.close < day_open else "NEUTRAL"
+        timeframe_alignment = self._build_timeframe_alignment(
+            daily_bias=daily_bias,
+            macro_bias=macro_bias,
+            trend_bias=trend_bias,
+            setup_bias=setup_bias,
+            local_bias=local_bias,
+            day_bias=day_bias,
+        )
+        market_clarity = self._build_market_clarity(
+            side=preferred_side,
+            timeframe_alignment=timeframe_alignment,
+            candle=candle,
+            atr_value=atr_value,
+            ema_fast_value=ema_fast_value,
+            range_high=range_high,
+            range_low=range_low,
+            market_regime=market_regime,
+            volatility_state=volatility_state,
+            liquidity_quality_buy=liquidity_quality_buy,
+            liquidity_quality_sell=liquidity_quality_sell,
+            continuation_quality_buy=continuation_quality_buy,
+            continuation_quality_sell=continuation_quality_sell,
+            quant_score=quant_score,
+            impulse_score=impulse_score,
+        )
+        preferred_side_resolution = self._resolve_preferred_side_from_clarity(
+            preferred_side=preferred_side,
+            market_clarity=market_clarity,
+        )
+        preferred_side = preferred_side_resolution["preferred_side"]
 
         return {
             "status": "ok",
             "symbol": symbol,
             "entry_timeframe": "M5",
-            "context_timeframes": ["H4", "H1", "M15"],
+            "context_timeframes": ["D1", "H4", "H1", "M15", "M5"],
             "candle_time_utc": candle.time.isoformat(),
             "hour_ny": hour_ny,
             "hour_rd": hour_rd,
@@ -579,11 +629,17 @@ class MaximoQuantV4MarketOverviewEngine:
                 strategy_snapshot=strategy_snapshot,
                 backtester=backtester,
             ),
-            "macro_bias": self._bias_from_row(macro_row),
-            "trend_bias": self._bias_from_row(trend_row),
-            "setup_bias": self._bias_from_row(setup_row),
-            "local_bias": "BUY" if local_bull else "SELL" if local_bear else "NEUTRAL",
-            "day_bias": "BUY" if candle.close > day_open else "SELL" if candle.close < day_open else "NEUTRAL",
+            "daily_bias": daily_bias,
+            "macro_bias": macro_bias,
+            "trend_bias": trend_bias,
+            "setup_bias": setup_bias,
+            "local_bias": local_bias,
+            "day_bias": day_bias,
+            "timeframe_alignment": timeframe_alignment,
+            "market_clarity": market_clarity,
+            "expected_entry_zone": market_clarity.get("expected_entry_zone"),
+            "entry_trigger_plan": market_clarity.get("entry_trigger_plan"),
+            "preferred_side_resolution": preferred_side_resolution,
             "buy_mtf_score": buy_mtf_score,
             "sell_mtf_score": sell_mtf_score,
             "preferred_side": preferred_side,
@@ -611,6 +667,248 @@ class MaximoQuantV4MarketOverviewEngine:
             "candidate_setups": candidate_setups,
             "ob_rejection_families": ob_rejection_families,
             "operational_family": ob_rejection_families["active_family"],
+        }
+
+    @staticmethod
+    def _resolve_preferred_side_from_clarity(
+        *,
+        preferred_side: str,
+        market_clarity: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Promote a clear MTF thesis when raw v56 MTF scores are neutral.
+
+        The original `preferred_side` is intentionally conservative and can stay
+        NEUTRAL when lower timeframes conflict with D1/H4.  For execution
+        awareness, however, a high-quality clarity map already contains a
+        professional thesis: selected side, entry zone, and cancellation plan.
+        This resolver does not force an order. It only prevents downstream
+        confirmation layers from losing the side that the clarity map already
+        identified.
+        """
+        raw_side = str(preferred_side or "NEUTRAL").upper()
+        selected_side = str(market_clarity.get("selected_side") or "NEUTRAL").upper()
+        clarity_score = float(market_clarity.get("clarity_score") or 0.0)
+        alignment = market_clarity.get("timeframe_alignment") or {}
+        alignment_score = float(alignment.get("alignment_score") or 0.0)
+        expected_zone = market_clarity.get("expected_entry_zone") or {}
+        in_zone_now = bool(expected_zone.get("in_zone_now"))
+
+        if raw_side in {"BUY", "SELL"}:
+            return {
+                "preferred_side": raw_side,
+                "source": "raw_mtf_score",
+                "reason": "El score MTF directo ya define lado dominante.",
+                "clarity_score": round(clarity_score, 4),
+                "alignment_score": round(alignment_score, 4),
+            }
+
+        can_promote = (
+            selected_side in {"BUY", "SELL"}
+            and clarity_score >= 70.0
+            and alignment_score >= 0.50
+            and in_zone_now
+        )
+        if can_promote:
+            return {
+                "preferred_side": selected_side,
+                "source": "market_clarity_mtf_zone",
+                "reason": (
+                    "El preferred_side crudo quedó neutral, pero market_clarity tiene lado, "
+                    "zona activa y alineación D1/H4 suficiente para sostener una tesis operativa."
+                ),
+                "clarity_score": round(clarity_score, 4),
+                "alignment_score": round(alignment_score, 4),
+            }
+
+        return {
+            "preferred_side": raw_side,
+            "source": "neutral_wait",
+            "reason": "La claridad aún no justifica convertir NEUTRAL en tesis operativa.",
+            "clarity_score": round(clarity_score, 4),
+            "alignment_score": round(alignment_score, 4),
+        }
+
+    @staticmethod
+    def _build_timeframe_alignment(
+        *,
+        daily_bias: str,
+        macro_bias: str,
+        trend_bias: str,
+        setup_bias: str,
+        local_bias: str,
+        day_bias: str,
+    ) -> dict[str, Any]:
+        weights = {
+            "D1": 2.0,
+            "H4": 1.6,
+            "H1": 1.2,
+            "M15": 0.8,
+            "M5": 0.6,
+            "DAY_OPEN": 0.4,
+        }
+        readings = {
+            "D1": {"bias": daily_bias, "role": "macro/daily roadmap", "weight": weights["D1"]},
+            "H4": {"bias": macro_bias, "role": "swing structure", "weight": weights["H4"]},
+            "H1": {"bias": trend_bias, "role": "intraday trend", "weight": weights["H1"]},
+            "M15": {"bias": setup_bias, "role": "setup context", "weight": weights["M15"]},
+            "M5": {"bias": local_bias, "role": "execution flow", "weight": weights["M5"]},
+            "DAY_OPEN": {"bias": day_bias, "role": "daily open pressure", "weight": weights["DAY_OPEN"]},
+        }
+        scores = {"BUY": 0.0, "SELL": 0.0}
+        directional_weight = 0.0
+        for timeframe, reading in readings.items():
+            bias = str(reading["bias"] or "NEUTRAL").upper()
+            if bias in scores:
+                score_weight = float(reading["weight"])
+                scores[bias] += score_weight
+                directional_weight += score_weight
+            readings[timeframe]["status"] = "directional" if bias in {"BUY", "SELL"} else "neutral"
+        if directional_weight <= 0:
+            dominant_side = "NEUTRAL"
+            alignment_score = 0.0
+        else:
+            dominant_side = "BUY" if scores["BUY"] > scores["SELL"] else "SELL" if scores["SELL"] > scores["BUY"] else "NEUTRAL"
+            alignment_score = abs(scores["BUY"] - scores["SELL"]) / directional_weight
+        conflicts = [
+            {
+                "timeframe": timeframe,
+                "bias": reading["bias"],
+                "dominant_side": dominant_side,
+                "role": reading["role"],
+            }
+            for timeframe, reading in readings.items()
+            if dominant_side in {"BUY", "SELL"} and str(reading["bias"]).upper() in {"BUY", "SELL"} and reading["bias"] != dominant_side
+        ]
+        return {
+            "dominant_side": dominant_side,
+            "alignment_score": round(alignment_score, 4),
+            "buy_score": round(scores["BUY"], 4),
+            "sell_score": round(scores["SELL"], 4),
+            "readings": readings,
+            "conflicts": conflicts,
+            "interpretation": (
+                f"Mapa MTF favorece {dominant_side} con alineación {round(alignment_score, 4)}."
+                if dominant_side in {"BUY", "SELL"}
+                else "Mapa MTF mixto; esperar que el precio confirme dirección."
+            ),
+        }
+
+    @staticmethod
+    def _build_market_clarity(
+        *,
+        side: str,
+        timeframe_alignment: dict[str, Any],
+        candle: Any,
+        atr_value: float,
+        ema_fast_value: float,
+        range_high: float,
+        range_low: float,
+        market_regime: str,
+        volatility_state: str,
+        liquidity_quality_buy: bool,
+        liquidity_quality_sell: bool,
+        continuation_quality_buy: str,
+        continuation_quality_sell: str,
+        quant_score: int,
+        impulse_score: int,
+    ) -> dict[str, Any]:
+        selected_side = str(side or "NEUTRAL").upper()
+        if selected_side not in {"BUY", "SELL"}:
+            selected_side = str(timeframe_alignment.get("dominant_side") or "NEUTRAL").upper()
+        price = float(candle.close)
+        atr = max(float(atr_value or 0.0), 1e-9)
+        if selected_side == "BUY":
+            zone_low = min(float(ema_fast_value), price) - atr * 0.35
+            zone_high = float(ema_fast_value) + atr * 0.20
+            stop_reference = min(zone_low, float(range_low)) - atr * 0.15
+            target_reference = price + max(price - stop_reference, atr) * 2.0
+            liquidity_ok = liquidity_quality_buy
+            continuation_quality = continuation_quality_buy
+            confirmation = [
+                "M5 debe cerrar alcista sobre la zona de retest/EMA sin wick vendedor dominante.",
+                "M1/M5 deben mostrar CHoCH/BOS alcista o desplazamiento limpio despues de barrer liquidez.",
+                "El precio debe sostenerse por encima de la zona; si la recupera y falla, no disparar.",
+            ]
+            cancel = [
+                "Cancelar si cierra por debajo de la zona esperada con desplazamiento bajista.",
+                "Cancelar si H1/H4/D1 pasan a rechazo vendedor fuerte contra BUY.",
+                "Cancelar si el SL compacto deja de ser posible o el RR cae por debajo de lo aceptable.",
+            ]
+        elif selected_side == "SELL":
+            zone_low = float(ema_fast_value) - atr * 0.20
+            zone_high = max(float(ema_fast_value), price) + atr * 0.35
+            stop_reference = max(zone_high, float(range_high)) + atr * 0.15
+            target_reference = price - max(stop_reference - price, atr) * 2.0
+            liquidity_ok = liquidity_quality_sell
+            continuation_quality = continuation_quality_sell
+            confirmation = [
+                "M5 debe cerrar bajista debajo de la zona de retest/EMA sin wick comprador dominante.",
+                "M1/M5 deben mostrar CHoCH/BOS bajista o desplazamiento limpio despues de barrer liquidez.",
+                "El precio debe rechazar la zona; si la rompe y sostiene arriba, no disparar.",
+            ]
+            cancel = [
+                "Cancelar si cierra por encima de la zona esperada con desplazamiento alcista.",
+                "Cancelar si H1/H4/D1 pasan a rechazo comprador fuerte contra SELL.",
+                "Cancelar si el SL compacto deja de ser posible o el RR cae por debajo de lo aceptable.",
+            ]
+        else:
+            zone_low = price - atr * 0.50
+            zone_high = price + atr * 0.50
+            stop_reference = None
+            target_reference = None
+            liquidity_ok = False
+            continuation_quality = "weak"
+            confirmation = [
+                "Esperar que D1/H4/H1/M15/M5 definan lado dominante.",
+                "No disparar hasta que el precio llegue a una zona clara y muestre desplazamiento con liquidez.",
+            ]
+            cancel = ["Cancelar cualquier idea si el mercado permanece mixto o sin zona limpia."]
+
+        in_zone_now = zone_low <= price <= zone_high
+        clarity_score = 0.0
+        clarity_score += float(timeframe_alignment.get("alignment_score") or 0.0) * 35.0
+        clarity_score += 20.0 if selected_side in {"BUY", "SELL"} else 0.0
+        clarity_score += 15.0 if in_zone_now else 6.0
+        clarity_score += 12.0 if liquidity_ok else 3.0
+        clarity_score += 10.0 if continuation_quality == "strong" else 6.0 if continuation_quality == "medium" else 2.0
+        clarity_score += min(8.0, max(0.0, (quant_score + impulse_score - 110.0) / 10.0))
+        clarity_score = max(0.0, min(100.0, clarity_score))
+        return {
+            "primary_situation": market_regime,
+            "volatility_state": volatility_state,
+            "selected_side": selected_side,
+            "clarity_score": round(clarity_score, 4),
+            "timeframe_alignment": timeframe_alignment,
+            "expected_entry_zone": {
+                "side": selected_side,
+                "zone_type": "retest_or_liquidity_reaction",
+                "from": round(zone_low, 3),
+                "to": round(zone_high, 3),
+                "ideal_entry": round(float(ema_fast_value), 3) if selected_side in {"BUY", "SELL"} else round(price, 3),
+                "current_price": round(price, 3),
+                "in_zone_now": in_zone_now,
+            },
+            "entry_trigger_plan": {
+                "side": selected_side,
+                "required_confirmation": confirmation,
+                "liquidity_confirmed": liquidity_ok,
+                "continuation_quality": continuation_quality,
+                "compact_sl_reference": round(stop_reference, 3) if stop_reference is not None else None,
+                "target_reference": round(target_reference, 3) if target_reference is not None else None,
+                "fire_when": (
+                    f"Disparar {selected_side} solo si precio toca/rechaza zona y final_confirmation + entry_quality pasan."
+                    if selected_side in {"BUY", "SELL"}
+                    else "No disparar; primero definir lado y zona."
+                ),
+            },
+            "cancel_conditions": cancel,
+            "wait_reason": (
+                "Precio ya esta dentro de la zona; falta confirmacion final limpia."
+                if in_zone_now and selected_side in {"BUY", "SELL"}
+                else "Esperar que el precio llegue a la zona esperada antes de perseguir la vela."
+                if selected_side in {"BUY", "SELL"}
+                else "Mercado sin lado dominante; observar."
+            ),
         }
 
     @staticmethod
@@ -1424,6 +1722,7 @@ class MaximoQuantV4MarketOverviewEngine:
             "local_time_rd",
             "session_tags",
             "allowed_hour_by_strategy",
+            "daily_bias",
             "macro_bias",
             "trend_bias",
             "setup_bias",
@@ -1438,6 +1737,30 @@ class MaximoQuantV4MarketOverviewEngine:
         ):
             if key in analysis["market_state"]:
                 lines.append(f"- {key}: {analysis['market_state'][key]}")
+        clarity = analysis["market_state"].get("market_clarity") or {}
+        if clarity:
+            trigger = clarity.get("entry_trigger_plan") or {}
+            alignment = clarity.get("timeframe_alignment") or {}
+            lines.extend(
+                [
+                    "",
+                    "## Market Clarity And Entry Zone",
+                    f"- selected_side: {clarity.get('selected_side')}",
+                    f"- clarity_score: {clarity.get('clarity_score')}",
+                    f"- expected_entry_zone: {clarity.get('expected_entry_zone')}",
+                    f"- fire_when: {trigger.get('fire_when')}",
+                    f"- wait_reason: {clarity.get('wait_reason')}",
+                    f"- compact_sl_reference: {trigger.get('compact_sl_reference')}",
+                    f"- target_reference: {trigger.get('target_reference')}",
+                    f"- timeframe_alignment: dominant={alignment.get('dominant_side')} score={alignment.get('alignment_score')}",
+                    "- required_confirmation:",
+                ]
+            )
+            for item in trigger.get("required_confirmation", []) or []:
+                lines.append(f"  - {item}")
+            lines.append("- cancel_conditions:")
+            for item in clarity.get("cancel_conditions", []) or []:
+                lines.append(f"  - {item}")
         lines.extend(["", "## Knowledge Alignment"])
         lines.append(f"- matched_context_count: {analysis['knowledge_alignment']['matched_context_count']}")
         lines.append(f"- support_score: {analysis['knowledge_alignment']['support_score']}")

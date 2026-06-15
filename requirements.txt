@@ -12,5 +12,6 @@ Pillow>=10.3.0
 PyMuPDF>=1.24.7
 MetaTrader5>=5.0.45
 pytest>=8.2.0
+pytest-asyncio>=0.24.0
 rarfile>=4.2
 py7zr>=0.21.0

@@ -100,6 +100,17 @@ def test_platform_api_bootstrap_and_status(tmp_path: Path) -> None:
                     "state": {"summary": "Idea BUY en observación."},
                     "waiting_for": ["Falta señal final."],
                     "next_confirmation_expected": "Cierre M5 alcista.",
+                    "final_confirmation": {
+                        "decision": "PREPARE",
+                        "side": "BUY",
+                        "final_confirmation_score": 68.0,
+                        "required_execute_score": 72.0,
+                        "blockers": ["signal_not_confirmed"],
+                        "session_execution_analysis": {"session": "pm_volatility_rd", "status": "optimal_session"},
+                        "execution_cost_analysis": {"status": "spread_ok", "spread": 0.08, "spread_p80": 0.2},
+                        "premium_discount_analysis": {"status": "valid_premium_discount_location", "position_in_range": 0.42},
+                        "dynamic_threshold_analysis": {"reasons": ["base_threshold"]},
+                    },
                 },
             }
         ),
@@ -110,8 +121,14 @@ def test_platform_api_bootstrap_and_status(tmp_path: Path) -> None:
     assert ai_live.json()["brain"]["action"] == "WATCH"
     assert ai_live.json()["market"]["candidate_side"] == "BUY"
     assert ai_live.json()["pattern_projection"]["probable_market_move"] == "continuación alcista si confirma M5"
+    assert "external_context" in ai_live.json()
     assert ai_live.json()["price_context"]["source"] == "mt5_read_only_snapshot"
     assert ai_live.json()["price_context"]["side"] == "BUY"
+    assert ai_live.json()["execution_guard"]["final_confirmation_score"] == 68.0
+    assert ai_live.json()["execution_guard"]["operational_sessions"][2]["code"] == "pm_volatility_rd"
+    assert ai_live.json()["execution_guard"]["operational_sessions"][2]["active"] is True
+    assert ai_live.json()["execution_guard"]["asset_radar"][0]["symbol"] == "XAUUSDm"
+    assert "signal_not_confirmed" in ai_live.json()["execution_guard"]["blocker_reasons"]
 
     me = client.get("/api/platform/me", headers={"Authorization": f"Bearer {token}"})
     assert me.status_code == 200
@@ -126,8 +143,15 @@ def test_platform_api_bootstrap_and_status(tmp_path: Path) -> None:
     assert "Última Acción AI" in html_root.text
     assert "AI Live Command Center" in html_root.text
     assert "Zona / precio vigilado" in html_root.text
+    assert "Contexto externo / noticias" in html_root.text
     assert "Nivel de confirmación" in html_root.text
     assert "Radar de Entrada AI" in html_root.text
+    assert "Sesiones RD" in html_root.text
+    assert "Radar por activo" in html_root.text
+    assert "Bloqueos / gatillo" in html_root.text
+    assert "ai-session-windows" in html_root.text
+    assert "ai-asset-radar" in html_root.text
+    assert "ai-blocker-radar" in html_root.text
     assert "entry-radar-confirmed" in html_root.text
     assert "entry-radar-missing" in html_root.text
     assert 'class="workspace-tab active" data-view-target="ai"' in html_root.text

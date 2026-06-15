@@ -61,6 +61,7 @@ from src.application.process_assets import ProcessingApplicationService
 from src.application.process_cataloged_assets import ArchiveDownloadOptions, CatalogedAssetProcessingService
 from src.application.query_knowledge import KnowledgeQueryApplicationService
 from src.application.run_blueprint_backtests import BlueprintBacktestRunApplicationService
+from src.application.run_ai_brain_replay_backtest import AIBrainReplayBacktestApplicationService
 from src.application.run_maximo_br_backtest import MaximoBRBacktestApplicationService
 from src.application.run_maximo_quant_v4_backtest import MaximoQuantV4BacktestApplicationService
 from src.application.run_maximo_quant_v4_demo import MaximoQuantV4DemoApplicationService
@@ -87,11 +88,13 @@ from src.db.models.knowledge import ContentChunk
 from src.db.models.telegram_message import TelegramMessage
 from src.db.repositories.channels import ChannelRepository
 from src.db.repositories.files import FileRepository
+from src.trading.v56_supervised_calibration import V56SupervisedCalibration
 from src.db.repositories.messages import MessageRepository
 from src.db.repositories.runs import RunRepository
 from src.db.session import init_db, session_scope
 from src.telegram.client import TelegramClientManager
 from src.telegram.sync_service import TelegramSyncOptions
+from src.trading.daily_demo_validation_report import DailyDemoValidationReport
 from src.trading.maximo_quant_v4_market_intelligence import MaximoQuantV4MarketIntelligenceEngine
 from src.trading.mt5_bridge import MT5Bridge
 from src.trading.reaction_zone_demo_telemetry_validation import ReactionZoneDemoTelemetryValidation
@@ -753,6 +756,32 @@ def run_maximo_quant_v4_backtest(
     typer.echo(json.dumps(summary, indent=2, ensure_ascii=False))
 
 
+@app.command("run-ai-brain-replay-backtest")
+def run_ai_brain_replay_backtest(
+    symbol: str = typer.Option(default="XAUUSDm", help="Broker symbol to replay, e.g. XAUUSDm."),
+    year: int = typer.Option(default=2026, help="Historical year to replay."),
+    initial_capital: float = typer.Option(default=500.0, help="Virtual demo balance for the replay."),
+    max_cycles: int = typer.Option(default=80, help="Maximum historical decision cycles to replay. Use 0 to replay all selected M5 cursors."),
+    step_bars: int = typer.Option(default=5, help="Replay every N M5 candles. Use 1 for full candle-by-candle coverage."),
+    start_date: Optional[str] = typer.Option(default=None, help="Optional YYYY-MM-DD replay start date."),
+    end_date: Optional[str] = typer.Option(default=None, help="Optional YYYY-MM-DD replay end date."),
+    anchor_trades_csv: Optional[Path] = typer.Option(default=None, help="Optional trades CSV; replay the full brain at each exported entry_time."),
+) -> None:
+    """Replay the full MAXIMO AI brain over historical candles with simulated demo execution."""
+    bootstrap()
+    summary = AIBrainReplayBacktestApplicationService(get_settings()).run(
+        symbol=symbol,
+        year=year,
+        initial_capital=initial_capital,
+        max_cycles=max_cycles,
+        step_bars=step_bars,
+        start_date=_parse_iso_date(start_date) if start_date else None,
+        end_date=_parse_iso_date(end_date) if end_date else None,
+        anchor_trades_csv=anchor_trades_csv,
+    )
+    typer.echo(json.dumps(summary, indent=2, ensure_ascii=False))
+
+
 @app.command("run-maximo-quant-v4-yearly-analysis")
 def run_maximo_quant_v4_yearly_analysis(
     symbol: str = typer.Option(default="XAUUSDm", help="Broker symbol to analyze."),
@@ -774,6 +803,17 @@ def run_maximo_quant_v4_yearly_analysis(
         session_variant=session_variant,
         timeframe=timeframe,
     )
+    typer.echo(json.dumps(summary, indent=2, ensure_ascii=False))
+
+
+@app.command("run-v56-supervised-ai-calibration")
+def run_v56_supervised_ai_calibration(
+    symbol: str = typer.Option(default="XAUUSDm", help="Broker symbol to calibrate, e.g. XAUUSDm."),
+    year: int = typer.Option(default=2025, help="Historical year to use as labelled master dataset."),
+) -> None:
+    """Build supervised calibration artifacts from the profitable v56 yearly trades."""
+    bootstrap()
+    summary = V56SupervisedCalibration(get_settings()).run(symbol=symbol, year=year)
     typer.echo(json.dumps(summary, indent=2, ensure_ascii=False))
 
 
@@ -814,6 +854,21 @@ def run_maximo_quant_v4_market_intelligence(
     """Build a full market intelligence report including context, volatility and event/news risk."""
     bootstrap()
     summary = MaximoQuantV4MarketIntelligenceApplicationService(get_settings()).run(symbol=symbol)
+    typer.echo(json.dumps(summary, indent=2, ensure_ascii=False))
+
+
+@app.command("generate-daily-demo-validation-report")
+def generate_daily_demo_validation_report(
+    report_date: Optional[str] = typer.Option(default=None, help="RD date YYYY-MM-DD. Defaults to today in RD."),
+) -> None:
+    """Generate the daily demo validation report for London/NY RD sessions."""
+    bootstrap()
+    settings = get_settings()
+    target = date.fromisoformat(report_date) if report_date else None
+    summary = DailyDemoValidationReport(
+        demo_dir=settings.paths.data_dir / "demo_trading" / "maximo_quant_v4",
+        reports_dir=settings.paths.data_dir / "reports",
+    ).generate(target_date=target)
     typer.echo(json.dumps(summary, indent=2, ensure_ascii=False))
 
 

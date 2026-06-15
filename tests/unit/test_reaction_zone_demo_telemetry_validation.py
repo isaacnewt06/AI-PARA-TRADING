@@ -63,9 +63,9 @@ def test_gate_blocks_non_demo_unsafe_costs_macro_session_and_risk(tmp_path: Path
         account_status=_account(is_demo=False),
         execution_environment=_environment(
             execution_viability="UNSAFE",
-            live_spread=0.18,
+            live_spread=0.42,
             live_latency=0.25,
-            slippage_estimated=0.25,
+            slippage_estimated=0.42,
         ),
         macro_action="block",
         session="london",
@@ -158,8 +158,9 @@ def test_assess_blocks_when_be_move_fails_or_environment_degrades(tmp_path: Path
         record,
         execution_environment=_environment(
             execution_viability="UNSAFE",
-            live_spread=0.2,
+            live_spread=0.42,
             live_latency=0.3,
+            slippage_estimated=0.42,
         ),
         macro_action="block",
     )

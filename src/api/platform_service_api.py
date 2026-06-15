@@ -653,6 +653,22 @@ def _ai_live_snapshot(settings: Settings, *, auth: dict) -> dict[str, Any]:
     latest_signal = _read_json_file(latest_signal_path)
     latest_intelligence = _read_json_file(latest_intelligence_path)
     learning_report = _read_json_file(learning_report_path)
+    latest_signal_status = _file_status(latest_signal_path)
+    latest_signal_updated_at = latest_signal_status.get("updated_at")
+    latest_signal_age_seconds = None
+    if latest_signal_updated_at:
+        try:
+            latest_signal_age_seconds = round(
+                (datetime.now(timezone.utc) - datetime.fromisoformat(str(latest_signal_updated_at))).total_seconds(),
+                1,
+            )
+        except ValueError:
+            latest_signal_age_seconds = None
+    runtime_state = "fresh"
+    if latest_signal_age_seconds is None:
+        runtime_state = "missing"
+    elif latest_signal_age_seconds > 60:
+        runtime_state = "stale"
 
     watch_trigger = latest_signal.get("watch_trigger", {}) or {}
     reasoning = latest_signal.get("reasoning_snapshot", {}) or {}
@@ -663,7 +679,17 @@ def _ai_live_snapshot(settings: Settings, *, auth: dict) -> dict[str, Any]:
     watch_policy = latest_signal.get("watch_execution_policy", {}) or {}
     risk_decision = latest_signal.get("execution_risk_decision", {}) or {}
     controlled_protocol = latest_signal.get("controlled_demo_survival_protocol", {}) or {}
+    final_confirmation = latest_signal.get("final_confirmation") or reasoning.get("final_confirmation") or {}
+    entry_quality = latest_signal.get("entry_quality") or reasoning.get("entry_quality") or {}
+    execution_readiness_quality = (
+        latest_signal.get("execution_readiness_quality")
+        or reasoning.get("execution_readiness_quality")
+        or reasoning.get("execution_readiness")
+        or {}
+    )
+    market_pulse = latest_signal.get("market_pulse") or reasoning.get("market_pulse") or {}
     event_risk = latest_intelligence.get("event_risk", {}) or {}
+    external_context = _build_external_market_context(event_risk)
     market_state = (latest_intelligence.get("overview", {}) or {}).get("market_state", {}) or {}
     knowledge_alignment = (latest_intelligence.get("overview", {}) or {}).get("knowledge_alignment", {}) or {}
     harmony = knowledge_alignment.get("harmony", {}) or {}
@@ -676,6 +702,39 @@ def _ai_live_snapshot(settings: Settings, *, auth: dict) -> dict[str, Any]:
         watch_trigger=watch_trigger,
         reasoning=reasoning,
     )
+    blocked_signal_statuses = {
+        "blocked_by_direction_consistency",
+        "blocked_by_final_confirmation",
+        "blocked_by_min_lot_exceeds_10_percent_account_risk",
+        "blocked_by_reentry_cooldown",
+    }
+    raw_signal_detected = bool(watch_trigger.get("signal_detected") or (reasoning.get("state", {}) or {}).get("signal_detected"))
+    signal_confirmed_for_execution = bool(
+        raw_signal_detected and str(latest_signal.get("execution_status") or "") not in blocked_signal_statuses
+    )
+    session_analysis = final_confirmation.get("session_execution_analysis", {}) or {}
+    execution_cost_analysis = final_confirmation.get("execution_cost_analysis", {}) or {}
+    premium_discount_analysis = final_confirmation.get("premium_discount_analysis", {}) or {}
+    dynamic_threshold_analysis = final_confirmation.get("dynamic_threshold_analysis", {}) or {}
+    blocker_reasons = _build_ai_block_reasons(
+        final_confirmation=final_confirmation,
+        risk_decision=risk_decision,
+        market_context=market_context,
+        event_risk=event_risk,
+    )
+    operational_sessions = _build_operational_sessions(session_analysis)
+    asset_radar = _build_asset_radar(
+        symbol=latest_signal.get("symbol") or latest_intelligence.get("symbol"),
+        brain_action=latest_signal.get("intelligence_action") or (latest_intelligence.get("execution_readiness", {}) or {}).get("action"),
+        execution_status=latest_signal.get("execution_status"),
+        market_pulse=market_pulse,
+        final_confirmation=final_confirmation,
+        entry_quality=entry_quality,
+        execution_readiness_quality=execution_readiness_quality,
+        active_watch=active_watch,
+        risk_decision=risk_decision,
+        blocker_reasons=blocker_reasons,
+    )
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -686,6 +745,9 @@ def _ai_live_snapshot(settings: Settings, *, auth: dict) -> dict[str, Any]:
         },
         "brain": {
             "generated_at": latest_signal.get("generated_at") or latest_signal.get("generated_at_utc"),
+            "artifact_updated_at": latest_signal_updated_at,
+            "artifact_age_seconds": latest_signal_age_seconds,
+            "runtime_state": runtime_state,
             "symbol": latest_signal.get("symbol") or latest_intelligence.get("symbol"),
             "dry_run": latest_signal.get("dry_run"),
             "action": latest_signal.get("intelligence_action") or (latest_intelligence.get("execution_readiness", {}) or {}).get("action"),
@@ -714,6 +776,7 @@ def _ai_live_snapshot(settings: Settings, *, auth: dict) -> dict[str, Any]:
             "active_events": event_risk.get("active_events", [])[:3],
             "upcoming_events": event_risk.get("upcoming_events", [])[:3],
         },
+        "external_context": external_context,
         "pattern_projection": {
             "dominant_family": projection.get("dominant_family") or harmony.get("dominant_family"),
             "operational_family": projection.get("operational_family") or watch_trigger.get("operational_family"),
@@ -740,7 +803,26 @@ def _ai_live_snapshot(settings: Settings, *, auth: dict) -> dict[str, Any]:
             "condition_checklist": list(reasoning.get("condition_checklist", [])),
             "setup_maturity": watch_trigger.get("setup_maturity") or setup.get("setup_maturity"),
             "confidence": watch_trigger.get("confidence") or setup.get("confidence"),
-            "signal_detected": watch_trigger.get("signal_detected") or (reasoning.get("state", {}) or {}).get("signal_detected"),
+            "signal_detected": signal_confirmed_for_execution,
+            "signal_candidate_detected": raw_signal_detected,
+            "execution_recovery_plan": risk_decision.get("execution_recovery_plan")
+            or reasoning.get("execution_recovery_plan")
+            or {},
+        },
+        "execution_guard": {
+            "final_confirmation_score": final_confirmation.get("final_confirmation_score"),
+            "final_confirmation_decision": final_confirmation.get("decision"),
+            "required_execute_score": final_confirmation.get("required_execute_score"),
+            "entry_quality_score": entry_quality.get("entry_quality_score"),
+            "execution_readiness_score": execution_readiness_quality.get("execution_readiness_score"),
+            "market_pulse_score": market_pulse.get("score"),
+            "session_analysis": session_analysis,
+            "execution_cost_analysis": execution_cost_analysis,
+            "premium_discount_analysis": premium_discount_analysis,
+            "dynamic_threshold_analysis": dynamic_threshold_analysis,
+            "blocker_reasons": blocker_reasons,
+            "operational_sessions": operational_sessions,
+            "asset_radar": asset_radar,
         },
         "active_watch": {
             "status": active_watch.get("status"),
@@ -772,6 +854,122 @@ def _ai_live_snapshot(settings: Settings, *, auth: dict) -> dict[str, Any]:
                 "decision_source_audit": _file_status(decision_audit_path),
             },
         },
+    }
+
+
+def _build_ai_block_reasons(
+    *,
+    final_confirmation: dict[str, Any],
+    risk_decision: dict[str, Any],
+    market_context: dict[str, Any],
+    event_risk: dict[str, Any],
+) -> list[str]:
+    reasons: list[str] = []
+    reasons.extend(str(item) for item in final_confirmation.get("blockers", []) or [])
+    reasons.extend(str(item) for item in risk_decision.get("blockers", []) or [])
+    for key in ("execution_status", "risk_application_reason", "reason"):
+        value = risk_decision.get(key)
+        if value:
+            reasons.append(str(value))
+    if market_context.get("execution_viability") and market_context.get("execution_viability") != "SAFE":
+        reasons.append(f"execution_viability={market_context.get('execution_viability')}")
+    if event_risk.get("action") and event_risk.get("action") != "allow":
+        reasons.append(f"macro_event_action={event_risk.get('action')}")
+    seen: set[str] = set()
+    clean: list[str] = []
+    for item in reasons:
+        text = item.strip()
+        key = text.lower()
+        if text and key not in seen:
+            seen.add(key)
+            clean.append(text)
+    return clean[:12]
+
+
+def _build_operational_sessions(session_analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    current = str(session_analysis.get("session") or "").lower()
+    windows = [
+        ("london_rd", "Londres RD", "03:00-05:00", "Alta probabilidad institucional si hay estructura y liquidez."),
+        ("ny_rd", "Nueva York RD", "08:00-11:30", "Ventana principal para XAUUSDm con confirmación limpia."),
+        ("pm_volatility_rd", "Tarde RD", "14:00-16:00", "Oportunidad extra: exigir confirmaciones completas y spread sano."),
+        ("evening_volatility_rd", "Noche RD", "20:00-22:00", "Oportunidad extra: operar solo si el mercado muestra movimiento real."),
+    ]
+    return [
+        {
+            "code": code,
+            "label": label,
+            "hours": hours,
+            "note": note,
+            "active": current == code,
+        }
+        for code, label, hours, note in windows
+    ]
+
+
+def _build_asset_radar(
+    *,
+    symbol: Any,
+    brain_action: Any,
+    execution_status: Any,
+    market_pulse: dict[str, Any],
+    final_confirmation: dict[str, Any],
+    entry_quality: dict[str, Any],
+    execution_readiness_quality: dict[str, Any],
+    active_watch: dict[str, Any],
+    risk_decision: dict[str, Any],
+    blocker_reasons: list[str],
+) -> list[dict[str, Any]]:
+    status = str(execution_status or brain_action or "WAIT").upper()
+    if blocker_reasons:
+        status = "BLOCK"
+    elif str(final_confirmation.get("decision") or "").upper() == "EXECUTE":
+        status = "EXECUTE"
+    elif active_watch.get("status"):
+        status = str(active_watch.get("status") or "WATCH").upper()
+    return [
+        {
+            "symbol": symbol or "XAUUSDm",
+            "status": status,
+            "side": final_confirmation.get("side") or active_watch.get("side") or "NEUTRAL",
+            "market_pulse": market_pulse.get("score"),
+            "final_confirmation": final_confirmation.get("final_confirmation_score"),
+            "entry_quality": entry_quality.get("entry_quality_score"),
+            "execution_readiness": execution_readiness_quality.get("execution_readiness_score"),
+            "risk_mode": risk_decision.get("allowed_risk_mode"),
+            "reason": blocker_reasons[0] if blocker_reasons else final_confirmation.get("reason") or active_watch.get("reason"),
+        }
+    ]
+
+
+def _build_external_market_context(event_risk: dict[str, Any]) -> dict[str, Any]:
+    active_events = list(event_risk.get("active_events", []) or [])
+    upcoming_events = list(event_risk.get("upcoming_events", []) or [])
+    sync_status = event_risk.get("sync_status", {}) or {}
+    action = str(event_risk.get("action") or "unknown")
+    next_event = active_events[0] if active_events else (upcoming_events[0] if upcoming_events else None)
+    if active_events:
+        anticipation = "Evento activo: dejar que el mercado muestre dirección real antes de ejecutar."
+    elif next_event:
+        minutes = next_event.get("minutes_until_start")
+        impact = str(next_event.get("impact") or "unknown")
+        title = str(next_event.get("title") or "evento macro")
+        anticipation = f"Próximo evento {impact}: {title} en {minutes} min. Preparar escenarios, no perseguir velas extendidas."
+    else:
+        anticipation = "Sin eventos relevantes cercanos; decidir principalmente por estructura, liquidez, momentum y spread."
+    if sync_status.get("status") == "error":
+        anticipation += " La fuente externa falló; se usa caché/manual hasta el próximo intento."
+    return {
+        "action": action,
+        "highest_active_impact": event_risk.get("highest_active_impact"),
+        "highest_upcoming_impact": event_risk.get("highest_upcoming_impact"),
+        "sync_status": sync_status,
+        "active_events": active_events[:3],
+        "upcoming_events": upcoming_events[:5],
+        "next_event": next_event,
+        "anticipation": anticipation,
+        "local_timezone": event_risk.get("local_timezone"),
+        "source_path": event_risk.get("source_path"),
+        "live_cache_path": event_risk.get("live_cache_path"),
     }
 
 
@@ -1328,6 +1526,47 @@ def _render_dashboard_html() -> str:
         color: #fff;
         margin-bottom: 4px;
       }
+      .live-state {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+        padding: 8px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(33,247,196,.24);
+        background: rgba(33,247,196,.10);
+        color: #bffff4;
+        text-transform: uppercase;
+        letter-spacing: .08em;
+        font-weight: 900;
+      }
+      .live-state::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: #21f7c4;
+        box-shadow: 0 0 16px rgba(33,247,196,.85);
+        animation: aiPulse 1.4s ease-in-out infinite;
+      }
+      .live-state.warn {
+        border-color: rgba(255,211,79,.32);
+        background: rgba(255,211,79,.12);
+        color: #ffe6a6;
+      }
+      .live-state.warn::before {
+        background: #ffd34f;
+        box-shadow: 0 0 16px rgba(255,211,79,.85);
+      }
+      .live-state.hot {
+        border-color: rgba(255,92,199,.36);
+        background: rgba(255,92,199,.13);
+        color: #ffd4f2;
+      }
+      .live-state.hot::before {
+        background: #ff5cc7;
+        box-shadow: 0 0 16px rgba(255,92,199,.85);
+      }
       .ai-matrix {
         display: grid;
         grid-template-columns: 1.2fr .8fr;
@@ -1618,6 +1857,81 @@ def _render_dashboard_html() -> str:
         color: #cfe1f7;
         font-size: 13px;
         line-height: 1.45;
+      }
+      .control-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+      .control-card {
+        position: relative;
+        overflow: hidden;
+        min-height: 132px;
+        padding: 14px;
+        border-radius: 20px;
+        border: 1px solid rgba(255,255,255,.12);
+        background:
+          radial-gradient(circle at 18% 15%, rgba(66,183,255,.16), transparent 26%),
+          linear-gradient(150deg, rgba(255,255,255,.065), rgba(255,255,255,.025));
+      }
+      .control-card::after {
+        content: "";
+        position: absolute;
+        inset: auto -20% -35% 30%;
+        height: 70px;
+        background: linear-gradient(90deg, transparent, rgba(33,247,196,.18), transparent);
+        transform: rotate(-8deg);
+        animation: entryScan 5.2s linear infinite;
+      }
+      .control-card h4 {
+        position: relative;
+        z-index: 1;
+        margin: 0 0 10px;
+        color: #dcecff;
+        font-size: 12px;
+        letter-spacing: .11em;
+        text-transform: uppercase;
+      }
+      .control-items {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        gap: 8px;
+      }
+      .session-chip,
+      .asset-row,
+      .blocker-row {
+        padding: 9px 10px;
+        border-radius: 14px;
+        border: 1px solid rgba(255,255,255,.11);
+        background: rgba(0,0,0,.14);
+        color: #dcecff;
+        font-size: 12px;
+        line-height: 1.35;
+      }
+      .session-chip.active,
+      .asset-row.execute {
+        border-color: rgba(33,247,196,.32);
+        background: rgba(33,247,196,.09);
+        box-shadow: 0 0 22px rgba(33,247,196,.08);
+      }
+      .asset-row.block,
+      .blocker-row {
+        border-color: rgba(255,92,199,.25);
+        background: rgba(255,92,199,.07);
+      }
+      .asset-row.watch,
+      .asset-row.prepare,
+      .asset-row.triggered {
+        border-color: rgba(255,211,79,.25);
+        background: rgba(255,211,79,.07);
+      }
+      .control-mini {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 11px;
       }
       .ai-learning-radar {
         display: grid;
@@ -2250,7 +2564,7 @@ def _render_dashboard_html() -> str:
       @media (max-width: 1100px) {
         .grid, .highlight-grid, .spotlight-grid, .layout, .actions-grid, .landing-hero, .feature-grid, .process-grid { grid-template-columns: 1fr 1fr; }
         .ai-matrix { grid-template-columns: 1fr; }
-        .entry-radar-grid { grid-template-columns: 1fr; }
+        .entry-radar-grid, .control-grid { grid-template-columns: 1fr; }
         .finance-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
         .landing-copy, .hero-visual { min-height: auto; }
         .terminal-card { margin-top: 210px; }
@@ -2260,7 +2574,7 @@ def _render_dashboard_html() -> str:
         .topbar { position: static; align-items: flex-start; }
         .brand { min-width: 0; }
         .nav-actions { justify-content: flex-start; }
-        .hero, .topbar, .grid, .highlight-grid, .spotlight-grid, .layout, .actions-grid, .form-grid, .detail-grid, .landing-hero, .feature-grid, .trust-row, .process-grid {
+        .hero, .topbar, .grid, .highlight-grid, .spotlight-grid, .layout, .actions-grid, .form-grid, .detail-grid, .landing-hero, .feature-grid, .trust-row, .process-grid, .control-grid {
           grid-template-columns: 1fr;
           display: grid;
         }
@@ -2580,6 +2894,7 @@ def _render_dashboard_html() -> str:
             <div class="ai-live-clock">
               <strong id="ai-live-action">Cargando...</strong>
               <span id="ai-live-updated">Esperando primer ciclo</span>
+              <span id="ai-live-runtime-state" class="live-state warn">sin ciclo</span>
             </div>
           </div>
 
@@ -2594,6 +2909,7 @@ def _render_dashboard_html() -> str:
               <div class="ai-thought-feed">
                 <div class="ai-thought"><strong>Lectura principal</strong><span id="ai-live-summary">Cargando razonamiento de la IA...</span></div>
                 <div class="ai-thought"><strong>Movimiento probable</strong><span id="ai-live-probable-move">Esperando proyección aprendida...</span></div>
+                <div class="ai-thought"><strong>Contexto externo / noticias</strong><span id="ai-live-external-context">Sincronizando calendario y riesgos externos...</span></div>
                 <div class="ai-thought"><strong>Zona / precio vigilado</strong><span id="ai-live-price-zone">Calculando zona activa desde MT5...</span></div>
                 <div class="ai-thought"><strong>Nivel de confirmación</strong><span id="ai-live-confirmation-price">Esperando nivel numérico...</span></div>
                 <div class="ai-thought"><strong>Próxima confirmación</strong><span id="ai-live-next-confirmation">Esperando checklist...</span></div>
@@ -2631,6 +2947,26 @@ def _render_dashboard_html() -> str:
                   </div>
                 </div>
                 <div class="entry-radar-footer" id="entry-radar-footer">La orden solo debe pasar si aparece señal final, SL lógico, RR evaluable, macro/spread permitidos y risk binding válido.</div>
+              </div>
+              <div class="control-grid">
+                <div class="control-card">
+                  <h4>Sesiones RD</h4>
+                  <div class="control-items" id="ai-session-windows">
+                    <div class="session-chip">Cargando ventanas operativas...</div>
+                  </div>
+                </div>
+                <div class="control-card">
+                  <h4>Radar por activo</h4>
+                  <div class="control-items" id="ai-asset-radar">
+                    <div class="asset-row watch">Esperando latest_signal...</div>
+                  </div>
+                </div>
+                <div class="control-card">
+                  <h4>Bloqueos / gatillo</h4>
+                  <div class="control-items" id="ai-blocker-radar">
+                    <div class="blocker-row">Esperando razones del motor...</div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -3077,6 +3413,32 @@ def _render_dashboard_html() -> str:
         }
       }
 
+      function formatAge(seconds) {
+        const numeric = Number(seconds);
+        if (!Number.isFinite(numeric)) {
+          return 'sin edad';
+        }
+        if (numeric < 60) {
+          return `${Math.max(0, Math.round(numeric))}s`;
+        }
+        const minutes = Math.floor(numeric / 60);
+        const rest = Math.round(numeric % 60);
+        return `${minutes}m ${rest}s`;
+      }
+
+      function renderRuntimeState(brain) {
+        const node = document.getElementById('ai-live-runtime-state');
+        if (!node) {
+          return;
+        }
+        const state = String(brain.runtime_state || 'missing').toLowerCase();
+        const age = formatAge(brain.artifact_age_seconds);
+        node.className = `live-state ${state === 'fresh' ? '' : (state === 'stale' ? 'warn' : 'hot')}`;
+        node.textContent = state === 'fresh'
+          ? `actualizando · ${age}`
+          : (state === 'stale' ? `stale · ${age}` : 'sin señal viva');
+      }
+
       function renderAiList(id, items, fallback) {
         const node = document.getElementById(id);
         if (!node) {
@@ -3155,11 +3517,57 @@ def _render_dashboard_html() -> str:
           : `<div class="entry-signal-item ${kind}">${esc(fallback)}</div>`;
       }
 
+      function renderControlCenterTiles(executionGuard) {
+        const sessionsNode = document.getElementById('ai-session-windows');
+        const assetNode = document.getElementById('ai-asset-radar');
+        const blockerNode = document.getElementById('ai-blocker-radar');
+        const sessions = executionGuard.operational_sessions || [];
+        const assets = executionGuard.asset_radar || [];
+        const blockers = executionGuard.blocker_reasons || [];
+        if (sessionsNode) {
+          sessionsNode.innerHTML = sessions.length
+            ? sessions.map(item => `
+              <div class="session-chip ${item.active ? 'active' : ''}">
+                <strong>${esc(item.label)} · ${esc(item.hours)}</strong>
+                <span class="control-mini">${esc(item.active ? 'ACTIVA AHORA' : item.note)}</span>
+              </div>
+            `).join('')
+            : '<div class="session-chip">Sin calendario de sesiones disponible.</div>';
+        }
+        if (assetNode) {
+          assetNode.innerHTML = assets.length
+            ? assets.map(item => {
+                const status = String(item.status || 'watch').toLowerCase();
+                return `
+                  <div class="asset-row ${esc(status)}">
+                    <strong>${esc(item.symbol)} · ${esc(item.side)} · ${esc(item.status)}</strong>
+                    <span class="control-mini">Pulse ${esc(item.market_pulse)} · Final ${esc(item.final_confirmation)} · EQ ${esc(item.entry_quality)} · ER ${esc(item.execution_readiness)}</span>
+                    <span class="control-mini">${esc(item.reason || `riesgo ${safeText(item.risk_mode)}`)}</span>
+                  </div>
+                `;
+              }).join('')
+            : '<div class="asset-row watch">Sin activo en radar todavía.</div>';
+        }
+        if (blockerNode) {
+          const guardLines = [
+            ...(blockers.length ? blockers : ['Sin bloqueo crítico reportado. Esperando gatillo limpio.']),
+            `Sesión: ${safeText((executionGuard.session_analysis || {}).session)} · ${safeText((executionGuard.session_analysis || {}).status)}`,
+            `Spread: ${safeText((executionGuard.execution_cost_analysis || {}).spread)} / P80 ${safeText((executionGuard.execution_cost_analysis || {}).spread_p80)} · ${safeText((executionGuard.execution_cost_analysis || {}).status)}`,
+            `Premium/Discount: ${safeText((executionGuard.premium_discount_analysis || {}).status)} · posición ${safeText((executionGuard.premium_discount_analysis || {}).position_in_range)}`,
+            `Umbral Q-learning: requiere ${safeText(executionGuard.required_execute_score)} · ${safeText(((executionGuard.dynamic_threshold_analysis || {}).reasons || []).join(', '))}`,
+          ];
+          blockerNode.innerHTML = uniqueSignals(guardLines, 8)
+            .map(item => `<div class="blocker-row">${esc(item)}</div>`)
+            .join('');
+        }
+      }
+
       function renderEntrySignalRadar(data) {
         const brain = data.brain || {};
         const market = data.market || {};
         const projection = data.pattern_projection || {};
         const reasoning = data.reasoning || {};
+        const executionGuard = data.execution_guard || {};
         const priceContext = data.price_context || {};
         const watchZone = priceContext.watch_zone || {};
         const activeWatch = data.active_watch || {};
@@ -3171,6 +3579,9 @@ def _render_dashboard_html() -> str:
           number01(reasoning.confidence),
           number01(brain.harmony_score),
           number01(brain.watch_probability_to_execute),
+          number01(executionGuard.final_confirmation_score),
+          number01(executionGuard.entry_quality_score),
+          number01(executionGuard.execution_readiness_score),
         ].filter(value => value !== null);
         const metricScore = metrics.length
           ? metrics.reduce((total, value) => total + value, 0) / metrics.length
@@ -3178,6 +3589,7 @@ def _render_dashboard_html() -> str:
         const checklistScore = checklist.length ? passedChecklist.length / checklist.length : null;
         const readiness = Math.round(((metricScore ?? checklistScore ?? 0) * 0.7 + (checklistScore ?? metricScore ?? 0) * 0.3) * 100);
         const action = String(brain.action || '').toUpperCase();
+        const recoveryPlan = reasoning.execution_recovery_plan || {};
         const blocked = action === 'BLOCKED' || brain.allowed_risk_mode === 'blocked' || market.macro_event_action === 'block';
         const radarStatus = blocked
           ? 'bloqueado'
@@ -3199,16 +3611,20 @@ def _render_dashboard_html() -> str:
           ...(market.candidate_side || market.preferred_side ? [`Lado vigilado: ${market.candidate_side || market.preferred_side}`] : []),
           ...(brain.watch_policy_action ? [`Política watch: ${brain.watch_policy_action}`] : []),
           ...(activeWatch.status ? [`Active watch: ${activeWatch.status} · ${safeText(activeWatch.progress)}`] : []),
+          ...(recoveryPlan.status ? [`Plan profesional: ${safeText(recoveryPlan.status)}`] : []),
           ...(projection.confirmation_focus || []),
           ...(projection.pattern_matches || []),
           ...(watchZone.low || watchZone.high ? [`Zona viva: ${safeText(watchZone.low)} - ${safeText(watchZone.high)}`] : []),
           ...(priceContext.confirmation_price ? [`Nivel de gatillo observado: ${priceContext.confirmation_price}`] : []),
+          ...(recoveryPlan.safe_retest_entry_reference ? [`Referencia de retest seguro: ${safeText(recoveryPlan.safe_retest_entry_reference)}`] : []),
         ];
         const missing = [
           ...pendingChecklist,
           ...(reasoning.waiting_for || []),
           ...(projection.missing_confirmations || []),
+          ...(executionGuard.blocker_reasons || []),
           ...(!reasoning.signal_detected ? ['Confirmación final signal_detected = true'] : []),
+          ...(recoveryPlan.required_conditions || []),
           ...(market.macro_event_action && market.macro_event_action !== 'allow' ? [`Macro/eventos debe cambiar a allow: ${market.macro_event_action}`] : []),
           ...(market.execution_viability && market.execution_viability !== 'SAFE' ? [`Ejecución debe estar SAFE: ${market.execution_viability}`] : []),
           ...(brain.allowed_risk_mode === 'blocked' ? ['Risk binding debe permitir reduced o normal'] : []),
@@ -3227,9 +3643,10 @@ def _render_dashboard_html() -> str:
         renderEntrySignalItems('entry-radar-confirmed', confirmed, 'confirmed', 'Todavía no hay confirmaciones fuertes registradas.');
         renderEntrySignalItems('entry-radar-active', active, 'active', 'La IA sigue observando hasta que aparezca una zona/trigger válido.');
         renderEntrySignalItems('entry-radar-missing', missing, 'missing', 'No falta nada crítico reportado; validar guardias de ejecución.');
+        renderControlCenterTiles(executionGuard);
         setText(
           'entry-radar-footer',
-          `Para ejecutar: señal final ${reasoning.signal_detected ? 'OK' : 'pendiente'} · SL/RR y guardias deben pasar · acción ${safeText(brain.action)} · execution_status ${safeText(brain.execution_status)}.`
+          `Para ejecutar: señal final ${reasoning.signal_detected ? 'OK' : 'pendiente'} · final ${safeText(executionGuard.final_confirmation_score)} / requerido ${safeText(executionGuard.required_execute_score)} · acción ${safeText(brain.action)} · execution_status ${safeText(brain.execution_status)}.`
         );
       }
 
@@ -3745,15 +4162,21 @@ def _render_dashboard_html() -> str:
         const reasoning = data.reasoning || {};
         const learning = data.learning || {};
         const activeWatch = data.active_watch || {};
+        const externalContext = data.external_context || {};
         const audit = data.audit || {};
         const sources = audit.sources || {};
 
         renderEntrySignalRadar(data);
         setText('ai-live-action', `${safeText(brain.action)} · ${safeText(brain.execution_status)}`);
-        setText('ai-live-updated', `Último ciclo: ${fmtTime(brain.generated_at)} · UI: ${fmtTime(data.generated_at)}`);
+        setText('ai-live-updated', `Último ciclo: ${fmtTime(brain.generated_at)} · archivo: ${fmtTime(brain.artifact_updated_at)} · UI: ${fmtTime(data.generated_at)}`);
+        renderRuntimeState(brain);
         setText('ai-live-side-tag', `${safeText(market.candidate_side || market.preferred_side)} ${safeText(brain.watch_policy_action)}`);
         setText('ai-live-summary', reasoning.summary || projection.interpretation || 'La IA sigue observando el mercado.');
         setText('ai-live-probable-move', projection.probable_market_move || 'Aún no hay movimiento probable definido por patrón aprendido.');
+        setText(
+          'ai-live-external-context',
+          `${safeText(externalContext.anticipation, 'Sin contexto externo disponible.')} · sync ${safeText((externalContext.sync_status || {}).status)} · event_action ${safeText(externalContext.action)}`
+        );
         setText(
           'ai-live-price-zone',
           priceContext.status === 'ready'
@@ -3777,6 +4200,7 @@ def _render_dashboard_html() -> str:
           pill(`lado ${esc(market.candidate_side || market.preferred_side || 'NEUTRAL')}`, market.candidate_side ? 'hot' : 'warn'),
           pill(`riesgo ${esc(brain.allowed_risk_mode || 'blocked')}`, brain.allowed_risk_mode === 'reduced' ? 'warn' : ''),
           pill(`macro ${esc(market.macro_event_action || 'unknown')}`, market.macro_event_action === 'allow' ? '' : 'warn'),
+          pill(`news ${esc(externalContext.action || 'unknown')}`, externalContext.action === 'allow' ? '' : 'warn'),
           pill(`exec ${esc(market.execution_viability || 'unknown')}`, market.execution_viability === 'SAFE' ? '' : 'warn'),
           pill(`precio ${esc(priceContext.current_price || 'pendiente')}`, priceContext.status === 'ready' ? '' : 'warn'),
         ].join('');
@@ -3820,6 +4244,9 @@ def _render_dashboard_html() -> str:
           `zona vigilada: ${safeText(watchZone.low)} - ${safeText(watchZone.high)} · confirmar ${safeText(priceContext.confirmation_price)}`,
           `regla precio: ${safeText(priceContext.confirmation_rule)}`,
           `evento macro: ${safeText(market.macro_event_action)}`,
+          `contexto externo: ${safeText(externalContext.anticipation)}`,
+          `sync calendario: ${safeText((externalContext.sync_status || {}).status)} · ${safeText((externalContext.sync_status || {}).reason || (externalContext.sync_status || {}).fallback || '')}`,
+          ...((externalContext.upcoming_events || []).slice(0, 3).map(event => `próximo evento: ${safeText(event.start_time_local)} · ${safeText(event.currency)} · ${safeText(event.impact)} · ${safeText(event.title)}`)),
           `último evento watch: ${safeText((activeWatch.last_event || {}).event)} · ${safeText((activeWatch.last_event || {}).reason)}`,
         ], 'Sin guardias reportados todavía.');
 
@@ -4267,6 +4694,11 @@ def _render_dashboard_html() -> str:
         document.getElementById('footer-note').textContent = error.message;
       });
       setInterval(loadStatus, 15000);
+      setInterval(() => {
+        if (authState.token) {
+          loadAiLive().catch(() => {});
+        }
+      }, 5000);
     </script>
   </body>
 </html>"""

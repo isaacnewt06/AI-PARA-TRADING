@@ -14,6 +14,7 @@ from typing import Any
 from src.core.config import Settings
 from src.core.logging import get_logger
 from src.trading.blueprint_backtester import Candle
+from src.trading.execution_environment_policy import evaluate_execution_environment
 
 logger = get_logger(__name__)
 
@@ -37,6 +38,7 @@ class MT5Bridge:
         "M15": "TIMEFRAME_M15",
         "H1": "TIMEFRAME_H1",
         "H4": "TIMEFRAME_H4",
+        "D1": "TIMEFRAME_D1",
     }
 
     COMMON_TERMINALS = [
@@ -246,6 +248,13 @@ class MT5Bridge:
             ask = float(tick_data["ask"])
             bid = float(tick_data["bid"])
             spread = round(max(0.0, ask - bid), 5)
+            latency = round(elapsed, 4)
+            execution_policy = evaluate_execution_environment(
+                symbol=resolved_symbol,
+                spread=spread,
+                latency=latency,
+                slippage=spread,
+            )
             return {
                 "symbol_requested": symbol,
                 "symbol_resolved": resolved_symbol,
@@ -253,11 +262,12 @@ class MT5Bridge:
                 "ask": ask,
                 "live_spread": spread,
                 "spread_price": spread,
-                "live_latency": round(elapsed, 4),
-                "latency_seconds": round(elapsed, 4),
+                "live_latency": latency,
+                "latency_seconds": latency,
                 "slippage_estimated": spread,
                 "execution_delay": None,
-                "execution_viability": "SAFE" if spread <= 0.15 and elapsed <= 0.20 else "UNSAFE",
+                "execution_viability": execution_policy.execution_viability,
+                **execution_policy.to_dict(),
                 "tick_time": tick_data.get("time"),
                 "tick_time_msc": tick_data.get("time_msc"),
                 "mfe": None,

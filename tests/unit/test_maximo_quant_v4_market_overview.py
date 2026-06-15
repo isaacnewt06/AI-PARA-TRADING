@@ -21,21 +21,28 @@ class _Session:
 
 
 class _FakeBridge:
+    def __init__(self) -> None:
+        self.last_bars_by_timeframe: dict[str, int] | None = None
+
     def read_market_snapshot(self, *, symbol: str, bars_by_timeframe: dict[str, int] | None = None) -> dict:
+        self.last_bars_by_timeframe = bars_by_timeframe
         return {
             "symbol": symbol,
             "timeframes": {
                 "M1": {"bars": 500, "first_bar_time": "2026-01-01T00:00:00+00:00", "last_bar_time": "2026-01-01T10:00:00+00:00"},
                 "M5": {"bars": 5000, "first_bar_time": "2026-01-01T00:00:00+00:00", "last_bar_time": "2026-01-01T10:00:00+00:00"},
                 "H1": {"bars": 2000, "first_bar_time": "2026-01-01T00:00:00+00:00", "last_bar_time": "2026-01-01T10:00:00+00:00"},
+                "H4": {"bars": 1000, "first_bar_time": "2026-01-01T00:00:00+00:00", "last_bar_time": "2026-01-01T10:00:00+00:00"},
+                "D1": {"bars": 500, "first_bar_time": "2026-01-01T00:00:00+00:00", "last_bar_time": "2026-01-01T10:00:00+00:00"},
             },
-            "candles": {"M1": [], "M5": [], "H1": []},
+            "candles": {"M1": [], "M5": [], "H1": [], "H4": [], "D1": []},
         }
 
 
 def test_market_overview_writes_outputs(tmp_path: Path) -> None:
     settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
-    engine = MaximoQuantV4MarketOverviewEngine(settings, bridge=_FakeBridge())
+    bridge = _FakeBridge()
+    engine = MaximoQuantV4MarketOverviewEngine(settings, bridge=bridge)
 
     engine._load_runtime = lambda: {  # type: ignore[method-assign]
         "backtester": object(),
@@ -105,9 +112,75 @@ def test_market_overview_writes_outputs(tmp_path: Path) -> None:
 
     assert result["action"] == "EXECUTE"
     assert result["harmony_score"] == 0.74
+    assert bridge.last_bars_by_timeframe == {"M1": 500, "M5": 5000, "H1": 2000, "H4": 1000, "D1": 500}
     assert engine.latest_json_path.exists()
     assert engine.latest_md_path.exists()
     assert engine.decision_log_path.exists()
+
+
+def test_market_clarity_builds_sell_zone_and_trigger_plan() -> None:
+    alignment = MaximoQuantV4MarketOverviewEngine._build_timeframe_alignment(
+        daily_bias="SELL",
+        macro_bias="SELL",
+        trend_bias="SELL",
+        setup_bias="SELL",
+        local_bias="SELL",
+        day_bias="SELL",
+    )
+    candle = type("Candle", (), {"close": 4500.0})()
+
+    clarity = MaximoQuantV4MarketOverviewEngine._build_market_clarity(
+        side="SELL",
+        timeframe_alignment=alignment,
+        candle=candle,
+        atr_value=10.0,
+        ema_fast_value=4505.0,
+        range_high=4520.0,
+        range_low=4480.0,
+        market_regime="EXPANSION",
+        volatility_state="expansion",
+        liquidity_quality_buy=False,
+        liquidity_quality_sell=True,
+        continuation_quality_buy="weak",
+        continuation_quality_sell="strong",
+        quant_score=85,
+        impulse_score=80,
+    )
+
+    assert clarity["selected_side"] == "SELL"
+    assert clarity["expected_entry_zone"]["side"] == "SELL"
+    assert clarity["entry_trigger_plan"]["compact_sl_reference"] > clarity["expected_entry_zone"]["to"]
+    assert "Disparar SELL" in clarity["entry_trigger_plan"]["fire_when"]
+
+
+def test_preferred_side_promotes_high_clarity_neutral_mtf() -> None:
+    result = MaximoQuantV4MarketOverviewEngine._resolve_preferred_side_from_clarity(
+        preferred_side="NEUTRAL",
+        market_clarity={
+            "selected_side": "SELL",
+            "clarity_score": 75.8,
+            "timeframe_alignment": {"alignment_score": 0.5652},
+            "expected_entry_zone": {"in_zone_now": True},
+        },
+    )
+
+    assert result["preferred_side"] == "SELL"
+    assert result["source"] == "market_clarity_mtf_zone"
+
+
+def test_preferred_side_stays_neutral_when_clarity_is_not_actionable() -> None:
+    result = MaximoQuantV4MarketOverviewEngine._resolve_preferred_side_from_clarity(
+        preferred_side="NEUTRAL",
+        market_clarity={
+            "selected_side": "SELL",
+            "clarity_score": 69.9,
+            "timeframe_alignment": {"alignment_score": 0.5652},
+            "expected_entry_zone": {"in_zone_now": True},
+        },
+    )
+
+    assert result["preferred_side"] == "NEUTRAL"
+    assert result["source"] == "neutral_wait"
 
 
 def test_decide_action_stands_aside_on_chop_and_neutral() -> None:

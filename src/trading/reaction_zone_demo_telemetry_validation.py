@@ -15,6 +15,7 @@ from typing import Any
 
 from src.core.config import Settings
 from src.trading.controlled_demo_survival_protocol import ControlledDemoSurvivalProtocolV1
+from src.trading.execution_environment_policy import limits_for_symbol
 
 
 TELEMETRY_FIELDS = [
@@ -107,6 +108,8 @@ class ReactionZoneDemoTelemetryValidation:
         risk_mode: str,
     ) -> DemoTelemetryGateResult:
         blockers: list[str] = []
+        symbol = str(execution_environment.get("symbol_resolved") or execution_environment.get("symbol") or "XAUUSDm")
+        execution_limits = limits_for_symbol(symbol)
         spread = self._float_or_none(execution_environment.get("live_spread"))
         latency = self._float_or_none(execution_environment.get("live_latency"))
         viability = str(execution_environment.get("execution_viability") or "UNKNOWN").upper()
@@ -116,16 +119,16 @@ class ReactionZoneDemoTelemetryValidation:
             blockers.append("execution_environment_not_safe")
         if spread is None:
             blockers.append("spread_unavailable")
-        elif spread > self.protocol.max_spread:
+        elif spread > execution_limits.max_spread:
             blockers.append("spread_above_survival_threshold")
         if latency is None:
             blockers.append("latency_unavailable")
-        elif latency > self.protocol.max_latency:
+        elif latency > execution_limits.max_latency:
             blockers.append("latency_unsafe")
         slippage = self._float_or_none(execution_environment.get("slippage_estimated"))
         if slippage is None:
             blockers.append("slippage_unavailable")
-        elif slippage > self.protocol.max_slippage:
+        elif slippage > execution_limits.max_slippage:
             blockers.append("slippage_above_survival_threshold")
         if str(macro_action).lower() != "allow":
             blockers.append("macro_not_allow")
@@ -236,6 +239,8 @@ class ReactionZoneDemoTelemetryValidation:
         reasons = list(record.get("management_failure_reason") or [])
         spread_values = [value for value in record.get("spread_during_trade", []) if isinstance(value, (int, float))]
         if execution_environment is not None:
+            symbol = str(execution_environment.get("symbol_resolved") or execution_environment.get("symbol") or record.get("symbol") or "XAUUSDm")
+            execution_limits = limits_for_symbol(symbol)
             current_spread = self._float_or_none(execution_environment.get("live_spread"))
             current_latency = self._float_or_none(execution_environment.get("live_latency"))
             current_viability = str(execution_environment.get("execution_viability") or "UNKNOWN").upper()
@@ -243,9 +248,9 @@ class ReactionZoneDemoTelemetryValidation:
                 spread_values.append(current_spread)
             if current_viability != "SAFE":
                 reasons.append("execution_environment_left_safe")
-            if current_spread is not None and current_spread > self.protocol.max_spread:
+            if current_spread is not None and current_spread > execution_limits.max_spread:
                 reasons.append("spread_degraded_during_trade")
-            if current_latency is not None and current_latency > self.protocol.max_latency:
+            if current_latency is not None and current_latency > execution_limits.max_latency:
                 reasons.append("latency_degraded_during_trade")
         if macro_action is not None and str(macro_action).lower() == "block":
             reasons.append("macro_changed_to_block")
