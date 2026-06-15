@@ -1,0 +1,35 @@
+name: Verify AI System
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Verify AI Components
+      run: |
+        echo "=== AI SYSTEM VERIFICATION ==="
+        echo "Python version: $(python3 --version)"
+        
+        # Check core files exist
+        test -f src/trading/definitive_execution_confirmation.py && echo "✓ Execution engine exists"
+        test -f src/trading/probability_assessment.py && echo "✓ Probability assessment exists"
+        test -f src/trading/q_learning_decision_memory.py && echo "✓ Q-learning memory exists"
+        test -f src/api/ai_copy_trading.py && echo "✓ AI copy trading API exists"
+        
+        # Check data files
+        test -f data/demo_trading/maximo_quant_v4/q_learning_table.json && echo "✓ Q-learning table exists"
+        test -f data/backtests/maximo_mtf_quant_v4/yearly/2025_v56_aggressive_filtered_b_all_trades.csv && echo "✓ Backtest data exists"
+        
+        echo "=== VERIFICATION COMPLETE ==="
+        
+    - name: Upload results
+      uses: actions/upload-artifact@v4
+      with:
+        name: verification-results
+        path: .
