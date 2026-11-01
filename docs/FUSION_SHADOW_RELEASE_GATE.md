@@ -43,6 +43,21 @@ claim of operational readiness. It is **not** an authorization to trade or a per
    governance decision, compliance/risk review, and defensible validation. This
    document grants none.
 
+## Legacy trading hard-lock remediation (draft branch)
+
+- All three mutating `MT5Bridge` methods fail before loading a backend:
+  `place_demo_market_order`, `modify_position_sl_tp`, and `close_position_partial`.
+  This is an unconditional research-release lock, not an environment opt-in.
+- Importing `demo_engine_patch` no longer monkey-patches the controlled demo
+  survival protocol. `UnleashedDemoProtocolV1` always blocks and grants zero
+  risk. The legacy `run_unleashed_ai.py` runner and direct MT5 replication
+  wrapper reject execution, including calls that bypass the entrypoint.
+- The original offline safety checks now include specific legacy bypass
+  regression tests and MAXIMO/replay simulation suites. Record the latest
+  exact SHA and GitHub Actions result before treating the checks as verified.
+- Simulated and historical replay positions are internal fakes, not broker
+  orders. Their tests do not authorize reconnecting live or DEMO execution.
+
 ## Commercial-readiness distinction
 
 A product may eventually monetize lawful research tools, reporting, or simulation

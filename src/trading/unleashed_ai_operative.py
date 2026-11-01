@@ -1,15 +1,13 @@
-"""UNLEASHED AI Continuous - Real MT5 Integration."""
+"""Retired legacy runner; shadow research cannot send MT5 orders."""
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
-from datetime import datetime, timezone
 from typing import Any
 
 
 class UnleashedAIContinuous:
-    """AI que busca oportunidades sin parar, con ejecución real en MT5."""
+    """Historical interface retained for compatibility, execution disabled."""
     
     CHECK_EVERY_N_SECONDS = 15
     
@@ -19,25 +17,8 @@ class UnleashedAIContinuous:
         self.last_signal_path = Path("data/demo_trading/maximo_quant_v4/latest_signal.json")
     
     def run(self) -> None:
-        """Bucle infinito buscando oportunidades."""
-        import src.trading.demo_engine_patch  # Apply unleashed protocol
-        
-        print(f"[UNLEASHED AI] Started for {self.symbol}")
-        print("=" * 60)
-        
-        cycle = 0
-        while True:
-            cycle += 1
-            result = self._evaluate_and_execute()
-            
-            status = "EXECUTE" if result["can_execute"] else "WATCH"
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Cycle {cycle}: {status} - Score: {result['score']}")
-            
-            if result["can_execute"] and result.get("signal"):
-                self._place_order_on_mt5(result["signal"])
-            
-            # Siempre continuar - nunca parar
-            time.sleep(self.CHECK_EVERY_N_SECONDS)
+        """Prevent the old autonomous execution loop from starting."""
+        raise RuntimeError("TRADING_AUTHORITY=NONE: unleashed execution is disabled.")
     
     def _evaluate_and_execute(self) -> dict[str, Any]:
         """Evalúa señal usando protocolo unleashed."""
@@ -57,8 +38,9 @@ class UnleashedAIContinuous:
         
         return {
             "score": result.get("final_confirmation_score", 0),
-            "can_execute": result.get("can_execute", False),
-            "signal": signal if result.get("can_execute") else None,
+            "can_execute": False,
+            "signal": None,
+            "blockers": ["trading_authority_locked"],
         }
     
     def _build_signal(self) -> dict[str, Any]:
@@ -104,34 +86,8 @@ class UnleashedAIContinuous:
         }
     
     def _place_order_on_mt5(self, signal: dict) -> None:
-        """Ejecuta orden en MT5 cuando la IA decide."""
-        try:
-            from src.trading.mt5_bridge import MT5Bridge
-            from src.core.config import get_settings
-            
-            bridge = MT5Bridge(get_settings())
-            
-            side = signal.get("direction", "BUY").lower()
-            stop = float(signal.get("stop_price", 2650.0))
-            target = float(signal.get("target_price", 2655.0))
-            
-            print(f"  -> Placing {side.upper()} order with SL={stop}, TP={target}")
-            
-            # Ejecución real
-            # result = bridge.place_demo_market_order(
-            #     symbol=self.symbol,
-            #     side=side,
-            #     volume_lots=self.volume,
-            #     stop_loss=stop,
-            #     take_profit=target,
-            #     deviation_points=50,
-            #     magic_number=560004,
-            #     comment="UNLEASHED_AI"
-            # )
-            # print(f"  -> Result: {result}")
-            
-        except Exception as e:
-            print(f"  -> MT5 Error: {e}")
+        """Keep direct callers blocked, even if the legacy loop is bypassed."""
+        raise RuntimeError("TRADING_AUTHORITY=NONE: MT5 orders are disabled.")
 
 
 if __name__ == "__main__":

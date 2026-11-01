@@ -16,7 +16,7 @@ class MT5ClientConfig:
 
 
 def execute_ai_order_on_mt5(signal: dict[str, Any], config: MT5ClientConfig) -> dict[str, Any]:
-    """Execute AI signal on local MT5 terminal. For client replication use.
+    """Legacy replication endpoint, currently disabled by trading policy.
     
     Args:
         signal: AI signal with direction, entry_price, stop_price, target_price
@@ -25,33 +25,7 @@ def execute_ai_order_on_mt5(signal: dict[str, Any], config: MT5ClientConfig) -> 
     Returns:
         Order result or error
     """
-    try:
-        from src.trading.mt5_bridge import MT5Bridge
-        from src.core.config import get_settings
-        
-        bridge = MT5Bridge(get_settings())
-        
-        side = signal.get("direction", "buy").lower()
-        entry = float(signal.get("entry_price", 0))
-        stop = float(signal.get("stop_price", 0))
-        target = float(signal.get("target_price", 0))
-        
-        if not entry or not stop or not target:
-            return {"error": "Missing price data", "executed": False}
-        
-        result = bridge.place_demo_market_order(
-            symbol=config.symbol,
-            side=side,
-            volume_lots=config.volume_lots,
-            stop_loss=stop,
-            take_profit=target,
-            deviation_points=config.deviation_points,
-            magic_number=config.magic_number,
-            comment=config.comment,
-        )
-        return {"executed": True, "result": result}
-    except Exception as e:
-        return {"executed": False, "error": str(e)}
+    return {"executed": False, "error": "TRADING_AUTHORITY=NONE: MT5 replication disabled."}
 
 
 def create_client_replication_script() -> str:

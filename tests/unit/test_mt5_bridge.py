@@ -237,27 +237,19 @@ def test_mt5_bridge_reports_demo_account(tmp_path: Path) -> None:
     assert "account_info" in status
 
 
-def test_mt5_bridge_places_demo_market_order(tmp_path: Path) -> None:
+def test_mt5_bridge_blocks_demo_market_order_before_backend_access(tmp_path: Path) -> None:
     settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
     backend = _FakeMT5()
     bridge = MT5Bridge(settings, backend=backend)
 
-    result = bridge.place_demo_market_order(
-        symbol="XAUUSDm",
-        side="buy",
-        volume_lots=0.01,
-        stop_loss=2348.0,
-        take_profit=2354.0,
-        deviation_points=50,
-        magic_number=560004,
-        comment="MAXIMO demo",
-    )
-
-    assert result["is_demo"] is True
-    assert backend.last_request is not None
-    assert backend.last_request["symbol"] == "XAUUSDm"
-    assert backend.last_request["type"] == backend.ORDER_TYPE_BUY
-    assert backend.last_request["comment"] == "MAXIMOdemo"
+    with pytest.raises(RuntimeError, match="TRADING_AUTHORITY=NONE"):
+        bridge.place_demo_market_order(
+            symbol="XAUUSDm", side="buy", volume_lots=0.01,
+            stop_loss=2348.0, take_profit=2354.0,
+            deviation_points=50, magic_number=560004, comment="MAXIMO demo",
+        )
+    assert backend.initialized is False
+    assert backend.last_request is None
 
 
 def test_mt5_bridge_sanitizes_order_comment_for_broker_compatibility() -> None:
@@ -265,89 +257,50 @@ def test_mt5_bridge_sanitizes_order_comment_for_broker_compatibility() -> None:
     assert MT5Bridge._sanitize_order_comment("áé test / weird") == "testweird"
 
 
-def test_mt5_bridge_retries_unsupported_filling_mode(tmp_path: Path) -> None:
+def test_mt5_bridge_cannot_try_filling_modes_when_locked(tmp_path: Path) -> None:
     settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
     backend = _RetryFillingMT5()
     bridge = MT5Bridge(settings, backend=backend)
 
-    result = bridge.place_demo_market_order(
-        symbol="XAUUSDm",
-        side="sell",
-        volume_lots=0.01,
-        stop_loss=2354.0,
-        take_profit=2344.0,
-        deviation_points=50,
-        magic_number=560004,
-        comment="MAXIMO demo",
-    )
-
-    assert result["result"]["retcode"] == backend.TRADE_RETCODE_DONE
-    assert len(backend.requests) >= 2
-    assert backend.requests[0]["type_filling"] == backend.ORDER_FILLING_IOC
-    assert backend.last_request["type_filling"] != backend.ORDER_FILLING_IOC
+    with pytest.raises(RuntimeError, match="TRADING_AUTHORITY=NONE"):
+        bridge.place_demo_market_order(
+            symbol="XAUUSDm", side="sell", volume_lots=0.01,
+            stop_loss=2354.0, take_profit=2344.0,
+            deviation_points=50, magic_number=560004, comment="MAXIMO demo",
+        )
+    assert backend.requests == []
 
 
-def test_mt5_bridge_normalizes_volume_to_symbol_minimum(tmp_path: Path) -> None:
+def test_mt5_bridge_normalizes_volume_to_symbol_minimum() -> None:
+    assert MT5Bridge._normalize_volume_lots(0.005, symbol_info=_SymbolInfo()) == 0.01
+
+
+def test_mt5_bridge_blocks_position_sl_tp_mutation(tmp_path: Path) -> None:
     settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
     backend = _FakeMT5()
     bridge = MT5Bridge(settings, backend=backend)
 
-    bridge.place_demo_market_order(
-        symbol="XAUUSDm",
-        side="buy",
-        volume_lots=0.005,
-        stop_loss=2348.0,
-        take_profit=2354.0,
-        deviation_points=50,
-        magic_number=560004,
-        comment="MAXIMO demo",
-    )
-
-    assert backend.last_request["volume"] == 0.01
+    with pytest.raises(RuntimeError, match="TRADING_AUTHORITY=NONE"):
+        bridge.modify_position_sl_tp(
+            symbol="XAUUSD", ticket=123456, stop_loss=2349.5,
+            take_profit=2360.0, magic_number=560004, comment="MAXIMO protect",
+        )
+    assert backend.initialized is False
+    assert backend.last_request is None
 
 
-def test_mt5_bridge_modifies_position_sl_tp(tmp_path: Path) -> None:
+def test_mt5_bridge_blocks_partial_close(tmp_path: Path) -> None:
     settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
     backend = _FakeMT5()
     bridge = MT5Bridge(settings, backend=backend)
 
-    result = bridge.modify_position_sl_tp(
-        symbol="XAUUSD",
-        ticket=123456,
-        stop_loss=2349.5,
-        take_profit=2360.0,
-        magic_number=560004,
-        comment="MAXIMO protect",
-    )
-
-    assert result["result"]["retcode"] == backend.TRADE_RETCODE_DONE
-    assert backend.last_request["action"] == backend.TRADE_ACTION_SLTP
-    assert backend.last_request["position"] == 123456
-    assert backend.last_request["symbol"] == "XAUUSDm"
-    assert backend.last_request["sl"] == 2349.5
-    assert backend.last_request["tp"] == 2360.0
-
-
-def test_mt5_bridge_closes_position_partial(tmp_path: Path) -> None:
-    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
-    backend = _FakeMT5()
-    bridge = MT5Bridge(settings, backend=backend)
-
-    result = bridge.close_position_partial(
-        symbol="XAUUSD",
-        ticket=123456,
-        side="buy",
-        volume_lots=0.02,
-        deviation_points=50,
-        magic_number=560004,
-        comment="MAXIMO partial",
-    )
-
-    assert result["result"]["retcode"] == backend.TRADE_RETCODE_DONE
-    assert backend.last_request["action"] == backend.TRADE_ACTION_DEAL
-    assert backend.last_request["position"] == 123456
-    assert backend.last_request["type"] == backend.ORDER_TYPE_SELL
-    assert backend.last_request["volume"] == 0.02
+    with pytest.raises(RuntimeError, match="TRADING_AUTHORITY=NONE"):
+        bridge.close_position_partial(
+            symbol="XAUUSD", ticket=123456, side="buy", volume_lots=0.02,
+            deviation_points=50, magic_number=560004, comment="MAXIMO partial",
+        )
+    assert backend.initialized is False
+    assert backend.last_request is None
 
 
 def test_mt5_bridge_calculates_one_percent_risk_volume(tmp_path: Path) -> None:

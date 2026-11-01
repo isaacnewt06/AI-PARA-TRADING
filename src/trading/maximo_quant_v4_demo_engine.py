@@ -16,6 +16,7 @@ from src.trading.controlled_demo_survival_protocol import ControlledDemoSurvival
 from src.trading.daily_demo_validation_report import DailyDemoValidationReport
 from src.trading.armed_retest_engine import ArmedRetestEngine
 from src.trading.entry_quality_engine import EntryQualityEngine
+from src.trading.exit_quality_evaluator import ExitQualityEvaluator
 from src.trading.expansion_subtype_pretrade_audit import ExpansionSubtypePretradeAuditV1
 from src.trading.execution_readiness_engine import ExecutionReadinessEngine
 from src.trading.definitive_execution_confirmation import DefinitiveExecutionConfirmationEngine

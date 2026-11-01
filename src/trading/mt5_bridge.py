@@ -30,7 +30,17 @@ class MT5ExportArtifact:
 
 
 class MT5Bridge:
-    """Adapter for MT5 historical export and controlled demo execution."""
+    """Adapter for MT5 historical export; order mutations are locked."""
+
+    @staticmethod
+    def _reject_order_mutation() -> None:
+        """Deny every MT5 order-changing path, before loading a backend.
+
+        No environment flag or legacy caller can grant trading authority in
+        this shadow-research release. A future execution product requires an
+        independently reviewed authorization design.
+        """
+        raise RuntimeError("TRADING_AUTHORITY=NONE: MT5 order mutations are disabled.")
 
     TIMEFRAME_MAP = {
         "M1": "TIMEFRAME_M1",
@@ -316,6 +326,7 @@ class MT5Bridge:
         # A legacy override must never promote a DEMO-only bridge to real orders.
         if allow_non_demo:
             raise RuntimeError("Non-demo order routing is disabled by safety policy.")
+        self._reject_order_mutation()
         backend = self._load_backend()
         if backend is None:
             raise RuntimeError("MetaTrader5 package is not installed.")
@@ -398,6 +409,7 @@ class MT5Bridge:
         magic_number: int | None = None,
         comment: str = "MAXIMO protect",
     ) -> dict:
+        self._reject_order_mutation()
         backend = self._load_backend()
         if backend is None:
             raise RuntimeError("MetaTrader5 package is not installed.")
@@ -446,6 +458,7 @@ class MT5Bridge:
         magic_number: int,
         comment: str = "MAXIMO partial",
     ) -> dict:
+        self._reject_order_mutation()
         backend = self._load_backend()
         if backend is None:
             raise RuntimeError("MetaTrader5 package is not installed.")
