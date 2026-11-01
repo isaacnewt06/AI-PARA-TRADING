@@ -1,4 +1,4 @@
-"""UNLEASHED Demo Protocol - Full market access, no time restrictions."""
+"""Legacy protocol retained for reading historical results, not execution."""
 
 from __future__ import annotations
 
@@ -11,16 +11,16 @@ from src.trading.execution_environment_policy import limits_for_symbol
 
 @dataclass(frozen=True, slots=True)
 class UnleashedDemoProtocolV1:
-    """Full 24/7 operation without time/ATR restrictions."""
+    """Research-only protocol; cannot grant trading authority."""
     
     name: str = "UNLEASHED_DEMO_PROTOCOL_V1"
     edge_name: str = "displacement_plus_wick_v1"
-    max_risk_multiplier: float = 1.0  # Full risk allowed
+    max_risk_multiplier: float = 0.0
     
-    # NO RESTRICTED HOURS - All hours valid
+    # Legacy metadata retained for compatibility; it grants no permission.
     OPERATIONAL_HOURS_24_7 = frozenset(range(24))
     
-    # ALL ATR REGIMES SAFe
+    # Research labels only; all trading evaluations are blocked.
     SAFE_ATR_REGIMES_ALL = frozenset({"HIGH", "EXTREME", "NORMAL", "LOW"})
     
     def evaluate(
@@ -32,15 +32,10 @@ class UnleashedDemoProtocolV1:
         event_risk: dict[str, Any],
         execution_environment: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Evaluate with ZERO time/ATR restrictions.
-        
-        Only blocks on:
-        - Critical macro events
-        - Unsafe execution environment
-        """
+        """Return a fail-closed research assessment regardless of input."""
         environment = execution_environment or {}
         
-        blockers: list[str] = []
+        blockers: list[str] = ["trading_authority_locked"]
         
         # ONLY critical blocks
         event_action = str(event_risk.get("action") or "allow").upper()
@@ -56,7 +51,7 @@ class UnleashedDemoProtocolV1:
         if environment.get("execution_viability") == "UNSAFE":
             blockers.append("execution_environment_unsafe")
         
-        allowed = not blockers
+        allowed = False
         
         return {
             "protocol_name": self.name,
@@ -66,11 +61,7 @@ class UnleashedDemoProtocolV1:
             "allowed": allowed,
             "action": "ALLOW" if allowed else "BLOCK",
             "allowed_risk_mode": "full" if allowed else "blocked",
-            "risk_multiplier": self.max_risk_multiplier,
+            "risk_multiplier": 0.0,
             "blockers": sorted(set(blockers)),
-            "reason": (
-                "Full 24/7 operation without artificial restrictions."
-                if allowed
-                else "Only critical safety issues blocked."
-            ),
+            "reason": "TRADING_AUTHORITY=NONE: no orders are authorized.",
         }

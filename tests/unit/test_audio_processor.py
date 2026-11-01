@@ -62,3 +62,13 @@ def test_openai_transcription_client_combines_chunked_transcripts(monkeypatch, t
     assert result.language == "es"
     assert result.text == "uno\n\ndos"
     assert cleanup.cleaned is True
+
+
+def test_paid_transcription_is_off_even_if_a_key_exists() -> None:
+    settings = SimpleNamespace(
+        openai_api_key="deliberately-fake-key",
+        openai_transcription_model="gpt-4o-transcribe",
+        allow_paid_api_usage=False,
+    )
+    client = build_default_transcription_client(settings)
+    assert isinstance(client, MockTranscriptionClient)

@@ -30,7 +30,17 @@ class MT5ExportArtifact:
 
 
 class MT5Bridge:
-    """Adapter for MT5 historical export and controlled demo execution."""
+    """Adapter for MT5 historical export; order mutations are locked."""
+
+    @staticmethod
+    def _reject_order_mutation() -> None:
+        """Deny every MT5 order-changing path, before loading a backend.
+
+        No environment flag or legacy caller can grant trading authority in
+        this shadow-research release. A future execution product requires an
+        independently reviewed authorization design.
+        """
+        raise RuntimeError("TRADING_AUTHORITY=NONE: MT5 order mutations are disabled.")
 
     TIMEFRAME_MAP = {
         "M1": "TIMEFRAME_M1",
@@ -313,77 +323,8 @@ class MT5Bridge:
         comment: str,
         allow_non_demo: bool = False,
     ) -> dict:
-        backend = self._load_backend()
-        if backend is None:
-            raise RuntimeError("MetaTrader5 package is not installed.")
-        if side not in {"buy", "sell"}:
-            raise ValueError("side must be 'buy' or 'sell'.")
-        if not self._initialize(backend):
-            raise RuntimeError(f"Unable to initialize MT5: {backend.last_error()}")
-        try:
-            account_info = backend.account_info()
-            account = account_info._asdict() if account_info else {}
-            is_demo = self._is_demo_account(backend, account)
-            if not allow_non_demo and not is_demo:
-                raise RuntimeError("Refusing to send order because the connected MT5 account does not look like a demo account.")
-            resolved_symbol = self._resolve_symbol(backend, symbol)
-            tick = backend.symbol_info_tick(resolved_symbol)
-            if tick is None:
-                raise RuntimeError(f"Unable to read symbol tick for {resolved_symbol}: {backend.last_error()}")
-            symbol_info = backend.symbol_info(resolved_symbol) if hasattr(backend, "symbol_info") else None
-            tick_data = tick._asdict() if hasattr(tick, "_asdict") else {"ask": getattr(tick, "ask", None), "bid": getattr(tick, "bid", None)}
-            price = float(tick_data["ask"] if side == "buy" else tick_data["bid"])
-            normalized_volume = self._normalize_volume_lots(volume_lots, symbol_info=symbol_info)
-            base_request = {
-                "action": getattr(backend, "TRADE_ACTION_DEAL"),
-                "symbol": resolved_symbol,
-                "volume": normalized_volume,
-                "type": getattr(backend, "ORDER_TYPE_BUY" if side == "buy" else "ORDER_TYPE_SELL"),
-                "price": price,
-                "sl": float(stop_loss),
-                "tp": float(take_profit),
-                "deviation": int(deviation_points),
-                "magic": int(magic_number),
-                "comment": self._sanitize_order_comment(comment),
-                "type_time": getattr(backend, "ORDER_TIME_GTC"),
-            }
-            done_code = getattr(backend, "TRADE_RETCODE_DONE", None)
-            last_error: Any = None
-            last_payload: dict[str, Any] | None = None
-            last_request: dict[str, Any] | None = None
-            for filling_type in self._filling_type_candidates(backend, resolved_symbol):
-                request = {**base_request, "type_filling": int(filling_type)}
-                result = backend.order_send(request)
-                last_request = request
-                if result is None:
-                    last_error = backend.last_error()
-                    if "filling" in str(last_error).lower():
-                        continue
-                    raise RuntimeError(f"MT5 order_send returned None: {last_error}")
-                result_payload = result._asdict() if hasattr(result, "_asdict") else dict(result)
-                last_payload = result_payload
-                retcode = int(result_payload.get("retcode", -1))
-                if done_code is None or retcode == int(done_code):
-                    return {
-                        "request": request,
-                        "result": result_payload,
-                        "account_info": account,
-                        "is_demo": is_demo,
-                        "symbol_requested": symbol,
-                        "symbol_resolved": resolved_symbol,
-                    }
-                broker_comment = str(result_payload.get("comment") or "")
-                if retcode == 10030 or "filling" in broker_comment.lower():
-                    continue
-                raise RuntimeError(f"MT5 order_send failed retcode={result_payload.get('retcode')} comment={result_payload.get('comment')}")
-            if last_payload is not None:
-                raise RuntimeError(
-                    f"MT5 order_send failed retcode={last_payload.get('retcode')} "
-                    f"comment={last_payload.get('comment')} request={last_request}"
-                )
-            raise RuntimeError(f"MT5 order_send returned None: {last_error}")
-        finally:
-            backend.shutdown()
+        # No trade-sending implementation exists in the zero-cost shadow release.
+        self._reject_order_mutation()
 
     def modify_position_sl_tp(
         self,
@@ -395,42 +336,7 @@ class MT5Bridge:
         magic_number: int | None = None,
         comment: str = "MAXIMO protect",
     ) -> dict:
-        backend = self._load_backend()
-        if backend is None:
-            raise RuntimeError("MetaTrader5 package is not installed.")
-        if not self._initialize(backend):
-            raise RuntimeError(f"Unable to initialize MT5: {backend.last_error()}")
-        try:
-            resolved_symbol = self._resolve_symbol(backend, symbol)
-            request = {
-                "action": getattr(backend, "TRADE_ACTION_SLTP"),
-                "position": int(ticket),
-                "symbol": resolved_symbol,
-                "sl": float(stop_loss),
-                "tp": float(take_profit),
-                "comment": self._sanitize_order_comment(comment),
-            }
-            if magic_number is not None:
-                request["magic"] = int(magic_number)
-            result = backend.order_send(request)
-            if result is None:
-                raise RuntimeError(f"MT5 SL/TP modification returned None: {backend.last_error()}")
-            result_payload = result._asdict() if hasattr(result, "_asdict") else dict(result)
-            done_code = getattr(backend, "TRADE_RETCODE_DONE", None)
-            retcode = int(result_payload.get("retcode", -1))
-            if done_code is not None and retcode != int(done_code):
-                raise RuntimeError(
-                    f"MT5 SL/TP modification failed retcode={result_payload.get('retcode')} "
-                    f"comment={result_payload.get('comment')}"
-                )
-            return {
-                "request": request,
-                "result": result_payload,
-                "symbol_requested": symbol,
-                "symbol_resolved": resolved_symbol,
-            }
-        finally:
-            backend.shutdown()
+        self._reject_order_mutation()
 
     def close_position_partial(
         self,
@@ -443,68 +349,7 @@ class MT5Bridge:
         magic_number: int,
         comment: str = "MAXIMO partial",
     ) -> dict:
-        backend = self._load_backend()
-        if backend is None:
-            raise RuntimeError("MetaTrader5 package is not installed.")
-        position_side = str(side).lower()
-        if position_side not in {"buy", "sell"}:
-            raise ValueError("side must be the open position side: 'buy' or 'sell'.")
-        if not self._initialize(backend):
-            raise RuntimeError(f"Unable to initialize MT5: {backend.last_error()}")
-        try:
-            resolved_symbol = self._resolve_symbol(backend, symbol)
-            symbol_info = backend.symbol_info(resolved_symbol) if hasattr(backend, "symbol_info") else None
-            tick = backend.symbol_info_tick(resolved_symbol)
-            if tick is None:
-                raise RuntimeError(f"Unable to read symbol tick for {resolved_symbol}: {backend.last_error()}")
-            tick_data = tick._asdict() if hasattr(tick, "_asdict") else {"ask": getattr(tick, "ask", None), "bid": getattr(tick, "bid", None)}
-            close_side = "sell" if position_side == "buy" else "buy"
-            price = float(tick_data["bid"] if close_side == "sell" else tick_data["ask"])
-            normalized_volume = self._normalize_volume_lots(volume_lots, symbol_info=symbol_info)
-            base_request = {
-                "action": getattr(backend, "TRADE_ACTION_DEAL"),
-                "position": int(ticket),
-                "symbol": resolved_symbol,
-                "volume": normalized_volume,
-                "type": getattr(backend, "ORDER_TYPE_BUY" if close_side == "buy" else "ORDER_TYPE_SELL"),
-                "price": price,
-                "deviation": int(deviation_points),
-                "magic": int(magic_number),
-                "comment": self._sanitize_order_comment(comment),
-                "type_time": getattr(backend, "ORDER_TIME_GTC"),
-            }
-            done_code = getattr(backend, "TRADE_RETCODE_DONE", None)
-            last_payload: dict[str, Any] | None = None
-            last_request: dict[str, Any] | None = None
-            for filling_type in self._filling_type_candidates(backend, resolved_symbol):
-                request = {**base_request, "type_filling": int(filling_type)}
-                result = backend.order_send(request)
-                last_request = request
-                if result is None:
-                    last_error = backend.last_error()
-                    if "filling" in str(last_error).lower():
-                        continue
-                    raise RuntimeError(f"MT5 partial close returned None: {last_error}")
-                result_payload = result._asdict() if hasattr(result, "_asdict") else dict(result)
-                last_payload = result_payload
-                retcode = int(result_payload.get("retcode", -1))
-                if done_code is None or retcode == int(done_code):
-                    return {
-                        "request": request,
-                        "result": result_payload,
-                        "symbol_requested": symbol,
-                        "symbol_resolved": resolved_symbol,
-                    }
-                broker_comment = str(result_payload.get("comment") or "")
-                if retcode == 10030 or "filling" in broker_comment.lower():
-                    continue
-                raise RuntimeError(f"MT5 partial close failed retcode={result_payload.get('retcode')} comment={result_payload.get('comment')}")
-            raise RuntimeError(
-                f"MT5 partial close failed retcode={(last_payload or {}).get('retcode')} "
-                f"comment={(last_payload or {}).get('comment')} request={last_request}"
-            )
-        finally:
-            backend.shutdown()
+        self._reject_order_mutation()
 
     def calculate_risk_volume_lots(
         self,
@@ -882,12 +727,9 @@ class MT5Bridge:
     def _is_demo_account(backend: Any, account: dict[str, Any]) -> bool:
         trade_mode = account.get("trade_mode")
         demo_mode = getattr(backend, "ACCOUNT_TRADE_MODE_DEMO", None)
-        if demo_mode is not None and trade_mode == demo_mode:
-            return True
-        if trade_mode == 0:
-            return True
-        text_fields = " ".join(str(account.get(key, "")) for key in ("server", "company", "name")).lower()
-        return "demo" in text_fields
+        # Do not infer account type from a server name, nor assume numeric 0
+        # when this backend does not expose the official MT5 DEMO constant.
+        return demo_mode is not None and trade_mode == demo_mode
 
     def _copy_rates_range_chunked(
         self,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from functools import lru_cache
-import os
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +50,7 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     ffmpeg_path: str = Field(default="ffmpeg", alias="FFMPEG_PATH")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    allow_paid_api_usage: bool = Field(default=False, alias="ALLOW_PAID_API_USAGE")
     openai_transcription_model: str = Field(
         default="gpt-4o-transcribe",
         alias="OPENAI_TRANSCRIPTION_MODEL",
@@ -143,12 +143,6 @@ def _load_project_env() -> None:
     env_path = project_root / ".env"
     if env_path.exists():
         load_dotenv(env_path, override=False)
-    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if openai_key:
-        return
-    fallback_env = project_root.parent / "OPENAI TRADING BOT" / ".env"
-    if fallback_env.exists():
-        load_dotenv(fallback_env, override=True)
 
 
 @lru_cache(maxsize=1)

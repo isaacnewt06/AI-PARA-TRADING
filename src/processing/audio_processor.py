@@ -184,7 +184,8 @@ class OpenAITranscriptionClient(TranscriptionClient):
 def build_default_transcription_client(settings: Settings | None) -> TranscriptionClient:
     """Return the best available transcription client for the current environment."""
 
-    if settings is not None and settings.openai_api_key:
+    # A discovered API key must not silently cause paid API calls.
+    if settings is not None and getattr(settings, "allow_paid_api_usage", False) and settings.openai_api_key:
         try:
             return OpenAITranscriptionClient(
                 api_key=settings.openai_api_key,

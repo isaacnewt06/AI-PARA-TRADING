@@ -1,19 +1,40 @@
-name: Test
+name: APT offline safety checks
 
 on:
+  pull_request:
   push:
-    branches: [ master ]
+    branches: [master]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  test:
+  offline-safety:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
-      with:
-        python-version: '3.13'
-    - name: Verify files
-      run: |
-        ls -la
-        echo "Files verified"
+      - name: Checkout exact revision without broken legacy submodule traversal
+        shell: bash
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install project and test dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Run offline safety regressions (no broker, no paid API)
+        run: >-
+          python -m pytest -q
+          tests/unit/test_mt5_bridge.py
+          tests/unit/test_audio_processor.py
+          tests/unit/test_unleashed_ai_protocol.py
+          tests/unit/test_unleashed_runtime_lock.py
+          tests/unit/test_trading_authority_policy.py
+          tests/unit/test_sensei_phase3_contract.py
+          tests/unit/test_maximo_quant_v4_demo_engine.py
+          tests/unit/test_ai_brain_replay_backtester.py

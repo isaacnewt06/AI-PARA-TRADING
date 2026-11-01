@@ -1,4 +1,4 @@
-"""UNLEASHED AI Continuous Operation - Never stops seeking opportunities."""
+"""Legacy offline signal watcher; trading authority is locked."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 
 
 class UnleashedAICycle:
-    """Continuous AI seeking opportunities 24/7."""
+    """Historical research cycle that never authorizes execution."""
     
     CHECK_INTERVAL_SECONDS = 15  # Very responsive
     
@@ -21,8 +21,6 @@ class UnleashedAICycle:
     def _load_engine(self):
         """Load unleashed engine."""
         if self.engine is None:
-            # Import patch first to unleash the protocol
-            import src.trading.demo_engine_patch  # noqa: F401
             from src.trading.definitive_execution_confirmation import DefinitiveExecutionConfirmationEngine
             self.engine = DefinitiveExecutionConfirmationEngine()
     
@@ -67,7 +65,8 @@ class UnleashedAICycle:
             "symbol": self.symbol,
             "decision": result.get("decision"),
             "score": result.get("final_confirmation_score"),
-            "can_execute": result.get("can_execute"),
+            "can_execute": False,
+            "blockers": ["trading_authority_locked"],
             "staged_exit": result.get("staged_exit_plan"),
         }
     
