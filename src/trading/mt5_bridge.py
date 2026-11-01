@@ -313,6 +313,9 @@ class MT5Bridge:
         comment: str,
         allow_non_demo: bool = False,
     ) -> dict:
+        # A legacy override must never promote a DEMO-only bridge to real orders.
+        if allow_non_demo:
+            raise RuntimeError("Non-demo order routing is disabled by safety policy.")
         backend = self._load_backend()
         if backend is None:
             raise RuntimeError("MetaTrader5 package is not installed.")
@@ -882,12 +885,9 @@ class MT5Bridge:
     def _is_demo_account(backend: Any, account: dict[str, Any]) -> bool:
         trade_mode = account.get("trade_mode")
         demo_mode = getattr(backend, "ACCOUNT_TRADE_MODE_DEMO", None)
-        if demo_mode is not None and trade_mode == demo_mode:
-            return True
-        if trade_mode == 0:
-            return True
-        text_fields = " ".join(str(account.get(key, "")) for key in ("server", "company", "name")).lower()
-        return "demo" in text_fields
+        # Do not infer account type from a server name, nor assume numeric 0
+        # when this backend does not expose the official MT5 DEMO constant.
+        return demo_mode is not None and trade_mode == demo_mode
 
     def _copy_rates_range_chunked(
         self,

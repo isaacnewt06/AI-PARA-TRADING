@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from src.core.config import reload_settings
 from src.trading.mt5_bridge import MT5Bridge
 
@@ -383,3 +385,25 @@ def test_mt5_bridge_snapshot_uses_resolved_symbol(tmp_path: Path) -> None:
 
     assert snapshot["symbol_requested"] == "XAUUSD"
     assert snapshot["symbol"] == "XAUUSDm"
+
+
+def test_non_demo_override_is_rejected_before_backend_access(tmp_path: Path) -> None:
+    settings = reload_settings({"DATA_DIR": str(tmp_path / "data")})
+    backend = _FakeMT5()
+    bridge = MT5Bridge(settings, backend=backend)
+
+    with pytest.raises(RuntimeError, match="Non-demo order routing is disabled"):
+        bridge.place_demo_market_order(
+            symbol="XAUUSDm", side="buy", volume_lots=0.01,
+            stop_loss=2348.0, take_profit=2354.0, deviation_points=50,
+            magic_number=560004, comment="research", allow_non_demo=True,
+        )
+    assert backend.initialized is False
+    assert backend.last_request is None
+
+
+def test_demo_identity_requires_explicit_mt5_mode_not_server_name() -> None:
+    backend = _FakeMT5()
+    assert MT5Bridge._is_demo_account(backend, {"trade_mode": 1, "server": "Demo-Server"}) is False
+    assert MT5Bridge._is_demo_account(object(), {"trade_mode": 0, "server": "Demo-Server"}) is False
+    assert MT5Bridge._is_demo_account(backend, {"trade_mode": backend.ACCOUNT_TRADE_MODE_DEMO}) is True
