@@ -24,9 +24,10 @@ claim of operational readiness. It is **not** an authorization to trade or a per
 | --- | --- | --- |
 | Focused safety regressions | 147/147 offline tests at `701d8f5cf3abbd905fad13c3252fd81d8f932434`, Actions run `41276443868` | PASS at that SHA only |
 | Additional hard-lock CI | 166/166 offline tests at `89a714d5ea8b645c497b298318b2d413448469c2`, Actions run `41276925586` | PASS at that SHA only |
-| Independent review | Claude Code read-only audit of `701d8f5cf3abbd905fad13c3252fd81d8f932434`: https://claude.ai/code/session_01BqW8hPac6K7MzY6UbA41Ga | PASS scoped locks; whole repo NOT PROVEN |
+| Producer schema fixture CI | 168/168 offline tests at `32f3c3be5bac4b053ef0c49791e9f86b5d08252d`, Actions run `41277105541` | PASS at that SHA only |
+| Independent review | Claude Code read-only static inspection of exact code head `32f3c3be5bac4b053ef0c49791e9f86b5d08252d`: https://claude.ai/code/session_01BqW8hPv9q35SE69z8rQ7kM; GitHub CI independently checked separately | Static lock evidence supports no direct order_send; whole repo NOT PROVEN |
 | Whole-repository testing | 467 tests collected locally after installing optional test dependencies; first full-suite failure is a missing `data/strategies/adaptive_strategy_library.json` artifact | NOT PROVEN |
-| APT → SENSEI data contract | Synthetic `StrategyExportBundle` JSON fixture with pinned SHA-256 `f11ed6b675e69651f3f8ded72e45678fd174fc5f7c7a7c45ac5da15479027147`; consumer test on SENSEI remains to run | PARTIAL, consumer pending |
+| APT → SENSEI data contract | Actual Pydantic `StrategyExportBundle` bytes from a **synthetic** sample, SHA-256 `f11ed6b675e69651f3f8ded72e45678fd174fc5f7c7a7c45ac5da15479027147`; SENSEI PR #379 exact head `eaf530b` passed 19/19 adapter tests in Actions `41277176271` | PASS synthetic contract only; source truth NOT PROVEN |
 | Backtest integrity | Auditable source licensing, chronological splits, fees, spread, slippage, out-of-sample testing | NOT PROVEN |
 | Financial results | Live or simulated P&L cannot be inferred from unit tests or a repository audit | NOT PROVEN |
 
