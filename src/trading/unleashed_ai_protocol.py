@@ -33,15 +33,13 @@ class UnleashedAIProtocol:
         
         # This legacy protocol is not a substitute for a complete risk manager.
         
-        allowed = not blockers
-        
         return {
             "protocol_name": "UNLEASHED_AI_V1",
-            "allowed": allowed,
-            "action": "ALLOW" if allowed else "BLOCK",
+            "allowed": False,
+            "action": "BLOCK",
             "blockers": blockers,
             "reason": "Not authorized for trading.",
-            "risk_multiplier": 1.0 if allowed else 0.0,
+            "risk_multiplier": 0.0,
         }
 
 
@@ -65,4 +63,4 @@ def quick_ai_check(intelligence: dict, signal: dict) -> tuple[bool, list[str]]:
     if viability == "UNSAFE":
         blockers.append("execution_environment_unsafe")
     
-    return len(blockers) == 0, blockers
+    return False, blockers

@@ -345,7 +345,7 @@ def test_non_demo_override_is_rejected_before_backend_access(tmp_path: Path) -> 
     backend = _FakeMT5()
     bridge = MT5Bridge(settings, backend=backend)
 
-    with pytest.raises(RuntimeError, match="Non-demo order routing is disabled"):
+    with pytest.raises(RuntimeError, match="TRADING_AUTHORITY=NONE"):
         bridge.place_demo_market_order(
             symbol="XAUUSDm", side="buy", volume_lots=0.01,
             stop_loss=2348.0, take_profit=2354.0, deviation_points=50,

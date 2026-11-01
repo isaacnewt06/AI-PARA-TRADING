@@ -22,9 +22,9 @@ claim of operational readiness. It is **not** an authorization to trade or a per
 
 | Gate | Evidence | Status |
 | --- | --- | --- |
-| Focused safety regressions | 20/20 offline tests at `312565e8b0726ab9cf24aacca937cdceee2881a5`, Actions run `41265738653` | PASS at that SHA only |
-| New commit CI | Re-run workflow and attach exact commit SHA and run URL | PENDING |
-| Independent review | Review full PR diff, remaining MT5 entry points, paid-service calls, provenance, and regressions | PENDING |
+| Focused safety regressions | 147/147 offline tests at `701d8f5cf3abbd905fad13c3252fd81d8f932434`, Actions run `41276443868` | PASS at that SHA only |
+| Current hardening commit CI | Re-run workflow and attach exact commit SHA and run URL | PENDING |
+| Independent review | Claude Code read-only audit of `701d8f5cf3abbd905fad13c3252fd81d8f932434`: https://claude.ai/code/session_01BqW8hPac6K7MzY6UbA41Ga | PASS scoped locks; whole repo NOT PROVEN |
 | Whole-repository testing | Investigate legacy workflow failures and run all feasible offline suites | NOT PROVEN |
 | APT → SENSEI data contract | Pin exact export fixture hash, schema validation, consumer test, and negative tests | NOT PROVEN |
 | Backtest integrity | Auditable source licensing, chronological splits, fees, spread, slippage, out-of-sample testing | NOT PROVEN |
@@ -47,14 +47,19 @@ claim of operational readiness. It is **not** an authorization to trade or a per
 
 - All three mutating `MT5Bridge` methods fail before loading a backend:
   `place_demo_market_order`, `modify_position_sl_tp`, and `close_position_partial`.
-  This is an unconditional research-release lock, not an environment opt-in.
+  Their former broker `order_send` implementations have been removed. This is
+  an unconditional research-release lock, not an environment opt-in.
 - Importing `demo_engine_patch` no longer monkey-patches the controlled demo
   survival protocol. `UnleashedDemoProtocolV1` always blocks and grants zero
   risk. The legacy `run_unleashed_ai.py` runner and direct MT5 replication
   wrapper reject execution, including calls that bypass the entrypoint.
 - The original offline safety checks now include specific legacy bypass
-  regression tests and MAXIMO/replay simulation suites. Record the latest
-  exact SHA and GitHub Actions result before treating the checks as verified.
+  regression tests and MAXIMO/replay simulation suites. CI scans every
+  production Python file for newly introduced direct `order_send` calls and
+  asserts that all mutating bridge methods have only the unconditional guard.
+  The legacy `quick_ai_check` is explicitly false for all tested configurations.
+  Record the latest exact SHA and GitHub Actions result before treating the
+  updated checks as verified.
 - Simulated and historical replay positions are internal fakes, not broker
   orders. Their tests do not authorize reconnecting live or DEMO execution.
 

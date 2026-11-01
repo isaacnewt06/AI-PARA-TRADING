@@ -34,5 +34,6 @@ jobs:
           tests/unit/test_audio_processor.py
           tests/unit/test_unleashed_ai_protocol.py
           tests/unit/test_unleashed_runtime_lock.py
+          tests/unit/test_trading_authority_policy.py
           tests/unit/test_maximo_quant_v4_demo_engine.py
           tests/unit/test_ai_brain_replay_backtester.py
